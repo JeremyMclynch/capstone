@@ -1,0 +1,95 @@
+mainmenu "UWB Mesh Tracker Configuration"
+
+# Node role selection
+choice NODE_ROLE
+    prompt "Node Role"
+    default NODE_ROLE_ANCHOR
+
+config NODE_ROLE_ANCHOR
+    bool "Anchor (fixed, DS-TWR responder)"
+    help
+      This node acts as a fixed anchor. It responds to DS-TWR ranging
+      requests from tags, calculates the distance, and reports it to
+      the CoAP server over the Thread network.
+
+config NODE_ROLE_TAG
+    bool "Tag (mobile, DS-TWR initiator)"
+    help
+      This node acts as a mobile tag. It initiates DS-TWR exchanges
+      with each known anchor to measure distances.
+
+endchoice
+
+config UWB_NODE_SHORT_ADDR
+    hex "Node 16-bit UWB short address"
+    default 0x0001
+    range 0x0001 0xFFFE
+    help
+      Unique 16-bit short address for this node's UWB MAC.
+      Must be unique across all anchors and tags in the network.
+      Anchors: 0x0001-0x00FF, Tags: 0x0100-0xFFFE (convention).
+
+config UWB_PAN_ID
+    hex "UWB PAN ID"
+    default 0xDECA
+    help
+      IEEE 802.15.4 PAN ID for the UWB ranging network.
+
+config UWB_RANGING_INTERVAL_MS
+    int "Ranging interval in milliseconds"
+    default 1000
+    range 100 10000
+    help
+      Time between successive ranging cycles. For tags, this is the
+      delay between completing one full sweep of all anchors and
+      starting the next.
+
+config UWB_TX_ANTENNA_DELAY
+    int "TX antenna delay (DWT time units)"
+    default 16385
+    help
+      TX antenna delay calibration value. Should be calibrated per
+      device for best accuracy.
+
+config UWB_RX_ANTENNA_DELAY
+    int "RX antenna delay (DWT time units)"
+    default 16385
+    help
+      RX antenna delay calibration value.
+
+config COAP_SERVER_ADDR
+    string "CoAP server IPv6 address"
+    default "ff03::1"
+    help
+      IPv6 address of the CoAP server to POST distance measurements to.
+      Default ff03::1 is the Thread realm-local all-nodes multicast.
+      For production, set to the server's Thread mesh-local address
+      (e.g., "fdde:ad00:beef::1") for unicast delivery.
+
+config COAP_SERVER_PORT
+    int "CoAP server port"
+    default 5683
+    help
+      UDP port of the CoAP server.
+
+config THREAD_NETWORK_KEY
+    string "OpenThread Network Key (16 bytes hex)"
+    default "00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff"
+    help
+      OpenThread network key. Must match across all nodes and the
+      border router. Change this for production deployments.
+
+config THREAD_CHANNEL
+    int "OpenThread channel"
+    default 15
+    range 11 26
+    help
+      IEEE 802.15.4 channel for the Thread network.
+
+config THREAD_PAN_ID
+    hex "OpenThread PAN ID"
+    default 0xABCD
+    help
+      Thread network PAN ID. Must match across all nodes.
+
+source "Kconfig.zephyr"

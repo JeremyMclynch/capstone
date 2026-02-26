@@ -5,3 +5,14 @@ dw3000-decadriver-source/
 libdeca/
 zephyr-dw3000-decadriver/
 zephyr-dw3000-examples/
+
+# Firmware build output
+firmware/build/
+
+# Python server
+server/__pycache__/
+server/*.pyc
+server/uwb_measurements.db
+*.egg-info/
+.venv/
+__pycache__/

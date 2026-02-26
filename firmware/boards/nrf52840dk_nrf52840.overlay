@@ -1,0 +1,38 @@
+/*
+ * DWM3000EVB Shield overlay for nRF52840 DK
+ *
+ * The DWM3000EVB plugs into the Arduino header of the nRF52840 DK.
+ * Pin mapping from qorvo_dws3000 shield:
+ *   SPI:     arduino_spi (SPI3)
+ *   CS:      D10 = P1.12
+ *   WAKEUP:  D9  = P1.11
+ *   IRQ:     D8  = P1.10
+ *   RESET:   D7  = P1.08
+ *   SPI_POL: D1  = P1.02  (requires UART1 disabled)
+ *   SPI_PHA: D0  = P1.01  (requires UART1 disabled)
+ *
+ * NOTE: UART1 must be disabled so its pins (P1.01, P1.02) are free
+ * for the DWM3000EVB SPI polarity/phase control.
+ */
+
+/* Disable UART1 to free Arduino D0/D1 pins for DWM3000EVB */
+arduino_serial: &uart1 {
+    status = "disabled";
+};
+
+/* Add DW3000 device to the Arduino SPI bus */
+&arduino_spi {
+    status = "okay";
+    cs-gpios = <&arduino_header 16 GPIO_ACTIVE_LOW>; /* D10 = P1.12 */
+
+    dw3000: dw3000@0 {
+        compatible = "decawave,dw3000";
+        spi-max-frequency = <16000000>;
+        reg = <0>;
+        wakeup-gpios  = <&arduino_header 15 GPIO_ACTIVE_HIGH>; /* D9  = P1.11 */
+        irq-gpios     = <&arduino_header 14 GPIO_ACTIVE_HIGH>; /* D8  = P1.10 */
+        reset-gpios   = <&arduino_header 13 GPIO_ACTIVE_LOW>;  /* D7  = P1.08 */
+        spi-pol-gpios = <&arduino_header  7 GPIO_ACTIVE_LOW>;  /* D1  = P1.02 */
+        spi-pha-gpios = <&arduino_header  6 GPIO_ACTIVE_LOW>;  /* D0  = P1.01 */
+    };
+};

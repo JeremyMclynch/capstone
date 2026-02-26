@@ -1,0 +1,8 @@
+# UWB Mesh Tracker - Server Dependencies
+
+# CoAP protocol library (async, Python 3.9+)
+aiocoap>=0.4.7
+
+# Optional: if you want to expose a REST API or web dashboard later
+# fastapi>=0.110.0
+# uvicorn[standard]>=0.29.0
