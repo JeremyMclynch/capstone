@@ -39,4 +39,13 @@ void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
  */
 void thread_coap_send_event(uint16_t node_id, uint8_t event, uint8_t seq);
 
+/**
+ * @brief Update the CoAP server address at runtime.
+ *
+ * @param addr  IPv6 address string (e.g. "ff03::1").
+ * @param port  UDP port number.
+ * @return 0 on success, -EINVAL if address is invalid.
+ */
+int thread_coap_set_server(const char *addr, uint16_t port);
+
 #endif /* THREAD_COAP_H */

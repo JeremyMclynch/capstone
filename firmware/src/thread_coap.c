@@ -22,6 +22,7 @@
 #include <openthread/thread.h>
 
 #include "thread_coap.h"
+#include "device_config.h"
 
 LOG_MODULE_REGISTER(thread_coap, LOG_LEVEL_INF);
 
@@ -185,14 +186,14 @@ static struct openthread_state_changed_callback ot_state_cb = {
 
 int thread_coap_init(void)
 {
-    /* Parse server IPv6 address from Kconfig string */
-    int ret = zsock_inet_pton(AF_INET6, CONFIG_COAP_SERVER_ADDR,
+    /* Parse server IPv6 address from runtime config */
+    int ret = zsock_inet_pton(AF_INET6, g_config.server_addr,
                               &server_addr.sin6_addr);
     if (ret != 1) {
-        LOG_ERR("Invalid COAP_SERVER_ADDR: '%s'", CONFIG_COAP_SERVER_ADDR);
+        LOG_ERR("Invalid server addr: '%s'", g_config.server_addr);
         return -EINVAL;
     }
-    server_addr.sin6_port = htons(CONFIG_COAP_SERVER_PORT);
+    server_addr.sin6_port = htons(g_config.server_port);
 
     /* Initialize CoAP */
     coap_init(AF_INET6, NULL);
@@ -211,7 +212,19 @@ int thread_coap_init(void)
     openthread_run();
 
     LOG_INF("Thread/CoAP initialized. Server: [%s]:%d",
-            CONFIG_COAP_SERVER_ADDR, CONFIG_COAP_SERVER_PORT);
+            g_config.server_addr, g_config.server_port);
+    return 0;
+}
+
+int thread_coap_set_server(const char *addr, uint16_t port)
+{
+    int ret = zsock_inet_pton(AF_INET6, addr, &server_addr.sin6_addr);
+    if (ret != 1) {
+        LOG_ERR("Invalid server addr: '%s'", addr);
+        return -EINVAL;
+    }
+    server_addr.sin6_port = htons(port);
+    LOG_INF("CoAP server updated: [%s]:%u", addr, port);
     return 0;
 }
 

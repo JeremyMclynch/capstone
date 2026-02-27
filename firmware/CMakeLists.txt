@@ -13,6 +13,10 @@ target_sources(app PRIVATE
     src/main.c
     src/uwb_manager.c
     src/thread_coap.c
+    src/device_config.c
+    src/uci.c
+    src/uci_uart.c
+    src/uci_coap.c
 )
 
 target_include_directories(app PRIVATE src)

@@ -92,4 +92,12 @@ config THREAD_PAN_ID
     help
       Thread network PAN ID. Must match across all nodes.
 
+config UCI_AUTOSTART
+    bool "Auto-start ranging on boot"
+    default y
+    help
+      When enabled, the device starts UWB ranging immediately on boot
+      using the saved configuration. When disabled, ranging must be
+      started via a UCI START command.
+
 source "Kconfig.zephyr"
