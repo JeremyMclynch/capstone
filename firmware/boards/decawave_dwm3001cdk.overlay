@@ -4,20 +4,22 @@
  * The DWM3001CDK module has an embedded QM33120 (DW3720-compatible)
  * UWB chip connected to the nRF52833 via SPI3.
  *
- * SPI3 pins (from board pinctrl):
+ * SPI3 pins (from base board DTS / pinctrl):
  *   SCK:  P0.03
  *   MOSI: P0.08
  *   MISO: P0.29
- *   CS:   P1.06 (already defined in base board DTS)
+ *   CS:   P1.06 (cs-gpios in base DTS)
  *
- * UWB chip control pins (verify against DWM3001CDK schematic):
- *   IRQ:    P0.26  (active high)
- *   RESET:  P0.31  (active low)
- *   WAKEUP: P0.28  (active high, optional)
+ * UWB chip control pins (from Qorvo DWM3001CDK FreeRTOS SDK
+ * CLI/DWM3001CDK/ProjectDefinition/uwb_stack_llhw.cmake):
+ *   IRQ:    P1.02  (active high)
+ *   RESET:  P0.25  (active low)
+ *   WAKEUP: P1.19  (active high) — NOT used; QM33120 wakes via CS pin toggle
  *
- * IMPORTANT: Verify these GPIO assignments against the actual
- * DWM3001CDK hardware schematic before use. Pin assignments
- * may differ between hardware revisions.
+ * The QM33120 on DWM3001CDK wakes from deep sleep via SPI CS held low for
+ * ≥400µs (Qorvo SDK: WAKEUP_CS_TOGGLE_US=400, WAKEUP_DELAY_US=500).
+ * The WAKEUP GPIO pin approach (1ms pulse) does not reliably wake the chip.
+ * Omitting wakeup-gpios forces dw3000_hw_wakeup() to use CS-based wakeup.
  */
 
 &spi3 {
@@ -25,8 +27,7 @@
         compatible = "decawave,dw3000";
         spi-max-frequency = <8000000>;
         reg = <0>;
-        irq-gpios     = <&gpio0 26 GPIO_ACTIVE_HIGH>;
-        reset-gpios   = <&gpio0 31 GPIO_ACTIVE_LOW>;
-        wakeup-gpios  = <&gpio0 28 GPIO_ACTIVE_HIGH>;
+        irq-gpios   = <&gpio1 2  GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
     };
 };

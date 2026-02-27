@@ -27,6 +27,7 @@ LOG_MODULE_REGISTER(thread_coap, LOG_LEVEL_INF);
 
 /* CoAP resource path components */
 static const char *const distance_uri[] = { "distance", NULL };
+static const char *const event_uri[]    = { "event",    NULL };
 
 /* Server address (parsed from CONFIG_COAP_SERVER_ADDR at init) */
 static struct sockaddr_in6 server_addr = {
@@ -52,7 +53,19 @@ struct distance_measurement {
 K_MSGQ_DEFINE(meas_queue, sizeof(struct distance_measurement),
               MEAS_QUEUE_DEPTH, 4);
 
+/* Pending UWB event for the event work item */
+struct uwb_event_msg {
+    uint16_t node_id;
+    uint8_t  event;
+    uint8_t  seq;
+};
+
+#define EVT_QUEUE_DEPTH 16
+K_MSGQ_DEFINE(evt_queue, sizeof(struct uwb_event_msg),
+              EVT_QUEUE_DEPTH, 4);
+
 static struct k_work send_work;
+static struct k_work send_evt_work;
 static bool thread_connected = false;
 
 /* ── Binary payload encoding ─────────────────────────────────────── */
@@ -62,6 +75,19 @@ struct __packed distance_payload {
     uint16_t tag_id;
     uint32_t distance_mm;
     uint32_t uptime_s;
+};
+
+/* Event payload (6 bytes, little-endian):
+ *   [0-1] node_id  (uint16_t)
+ *   [2]   event    (uint8_t)  — UWB_EVT_* constant
+ *   [3]   seq      (uint8_t)  — frame sequence number
+ *   [4-5] reserved (uint16_t) — zero
+ */
+struct __packed event_payload {
+    uint16_t node_id;
+    uint8_t  event;
+    uint8_t  seq;
+    uint16_t reserved;
 };
 
 /* ── CoAP send work handler ──────────────────────────────────────── */
@@ -91,6 +117,34 @@ static void coap_send_work_handler(struct k_work *work)
         } else {
             LOG_DBG("Posted: anchor=0x%04X tag=0x%04X dist=%.3f m",
                     meas.anchor_id, meas.tag_id, (double)meas.distance_m);
+        }
+    }
+}
+
+/* ── CoAP event send work handler ───────────────────────────────── */
+
+static void coap_send_evt_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    struct uwb_event_msg msg;
+
+    while (k_msgq_get(&evt_queue, &msg, K_NO_WAIT) == 0) {
+        struct event_payload payload = {
+            .node_id  = msg.node_id,
+            .event    = msg.event,
+            .seq      = msg.seq,
+            .reserved = 0,
+        };
+
+        int ret = coap_send_request(COAP_METHOD_POST,
+                                    (const struct sockaddr *)&server_addr,
+                                    event_uri,
+                                    (const uint8_t *)&payload,
+                                    sizeof(payload),
+                                    NULL);
+        if (ret < 0) {
+            LOG_WRN("Event CoAP POST failed: %d", ret);
         }
     }
 }
@@ -149,7 +203,8 @@ int thread_coap_init(void)
                        K_THREAD_STACK_SIZEOF(coap_workq_stack),
                        COAP_WORKQ_PRIORITY, NULL);
 
-    k_work_init(&send_work, coap_send_work_handler);
+    k_work_init(&send_work,     coap_send_work_handler);
+    k_work_init(&send_evt_work, coap_send_evt_work_handler);
 
     /* Register Thread state change callback and start the stack */
     openthread_state_changed_callback_register(&ot_state_cb);
@@ -158,6 +213,25 @@ int thread_coap_init(void)
     LOG_INF("Thread/CoAP initialized. Server: [%s]:%d",
             CONFIG_COAP_SERVER_ADDR, CONFIG_COAP_SERVER_PORT);
     return 0;
+}
+
+void thread_coap_send_event(uint16_t node_id, uint8_t event, uint8_t seq)
+{
+    if (!thread_connected) {
+        return;
+    }
+
+    struct uwb_event_msg msg = {
+        .node_id = node_id,
+        .event   = event,
+        .seq     = seq,
+    };
+
+    if (k_msgq_put(&evt_queue, &msg, K_NO_WAIT) != 0) {
+        LOG_WRN("Event queue full, dropping");
+    }
+
+    k_work_submit_to_queue(&coap_workq, &send_evt_work);
 }
 
 void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,

@@ -1,23 +1,19 @@
 /*
- * UWB Manager - DS-TWR Ranging Implementation
+ * UWB Manager - DS-TWR Ranging (interrupt-driven)
  *
- * Implements Double-Sided Two-Way Ranging (DS-TWR) using the DW3000
- * UWB transceiver via the zephyr-dw3000-decadriver Zephyr module.
+ * Architecture:
+ *   - DW3000 IRQ pin → GPIO interrupt → k_work → dwt_isr() → callbacks
+ *   - Callbacks post a k_sem to wake the UWB thread
+ *   - UWB thread blocks on k_sem between events (no spin-loops)
+ *   - Critical timing sections (POLL_RX→RESP_TX, RESP_RX→FINAL_TX) still
+ *     use k_sched_lock() to prevent preemption during the delay calculation
+ *     and dwt_starttx() call
  *
- * Anchor role (responder): Waits for POLL frames from any tag,
- *   performs the DS-TWR exchange, calculates distance, invokes callback.
- *
- * Tag role (initiator): Cycles through the known anchor address list,
- *   initiates a DS-TWR exchange with each anchor in turn.
- *
- * Frame format (IEEE 802.15.4 compliant, 16-bit addressing):
- *   [0-1]  Frame control  (0x8841 = data, 16-bit addr, intra-PAN)
- *   [2]    Sequence number
- *   [3-4]  PAN ID         (CONFIG_UWB_PAN_ID, little-endian)
- *   [5-6]  Destination address (16-bit, little-endian)
- *   [7-8]  Source address      (16-bit, little-endian)
- *   [9]    Function code  (POLL=0x21, RESP=0x10, FINAL=0x23)
- *   [10+]  Payload (timestamps in FINAL; activity code in RESP)
+ * Role selected at compile time:
+ *   CONFIG_NODE_ROLE_ANCHOR=y  -> responder  (receives POLL, sends RESP,
+ *                                              receives FINAL, computes distance)
+ *   CONFIG_NODE_ROLE_TAG=y     -> initiator  (sends POLL, receives RESP,
+ *                                              sends FINAL)
  */
 
 #include <zephyr/kernel.h>
@@ -31,272 +27,277 @@
 #include "dw3000_spi.h"
 
 #include "uwb_manager.h"
+#include "thread_coap.h"
 
 LOG_MODULE_REGISTER(uwb_manager, LOG_LEVEL_INF);
 
-/* ── Configuration ────────────────────────────────────────────────── */
-
-/* Known anchor short addresses (tags only).
- * Edit to match your deployment. */
-static const uint16_t anchor_list[UWB_MAX_ANCHORS] = {
-    0x0001,  /* Anchor 1 */
-    0x0002,  /* Anchor 2 */
-    0x0003,  /* Anchor 3 */
-    /* Add more anchors here, up to UWB_MAX_ANCHORS */
-    0x0000, 0x0000, 0x0000, 0x0000, 0x0000  /* Sentinel: 0x0000 = unused */
-};
-
-/* DW3000 channel/PHY configuration (matching examples ex_05a/ex_05b) */
+/* ── PHY config ──────────────────────────────────────────────────── */
 static dwt_config_t uwb_config = {
     5,               /* Channel 5 */
-    DWT_PLEN_128,    /* Preamble length 128 symbols */
-    DWT_PAC8,        /* PAC size 8 (for 128-symbol preamble) */
-    9,               /* TX preamble code 9 */
-    9,               /* RX preamble code 9 */
+    DWT_PLEN_128,
+    DWT_PAC8,
+    9,               /* TX preamble code */
+    9,               /* RX preamble code */
     1,               /* Non-standard 8-symbol SFD */
-    DWT_BR_6M8,      /* 6.8 Mbps data rate */
-    DWT_PHRMODE_STD, /* Standard PHR mode */
-    DWT_PHRRATE_STD, /* Standard PHR rate */
-    (129 + 8 - 8),   /* SFD timeout = preamble_len + 1 + SFD_len - PAC */
+    DWT_BR_6M8,
+    DWT_PHRMODE_STD,
+    DWT_PHRRATE_STD,
+    (129 + 8 - 8),   /* SFD timeout */
     DWT_STS_MODE_OFF,
     DWT_STS_LEN_64,
     DWT_PDOA_M0
 };
 
-/* TX power / spectrum calibration (typical values for Ch.5) */
 static dwt_txconfig_t txconfig = {
-    0x34,       /* PG delay */
-    0xfdfdfdfd, /* TX power */
-    0x0         /* PG count (0 = auto) */
+    0x34,
+    0xfdfdfdfd,
+    0x0
 };
 
-/* ── Timing constants (UWB microseconds) ─────────────────────────── */
-#define CPU_PROCESSING_TIME         400
-#define POLL_TX_TO_RESP_RX_DLY_UUS  (300 + CPU_PROCESSING_TIME)
-#define RESP_RX_TO_FINAL_TX_DLY_UUS (300 + CPU_PROCESSING_TIME)
-#define POLL_RX_TO_RESP_TX_DLY_UUS  900
-#define RESP_TX_TO_FINAL_RX_DLY_UUS 500
-#define RESP_RX_TIMEOUT_UUS         300
-#define FINAL_RX_TIMEOUT_UUS        220
-#define PRE_TIMEOUT                 5
-#define UUS_TO_DWT_TIME             65536   /* 1 UWB-us = 65536 DWT time units */
+/* ── Antenna delays ──────────────────────────────────────────────── */
+#define TX_ANT_DLY 16385
+#define RX_ANT_DLY 16385
 
-/* Speed of light in m/s */
-#define SPEED_OF_LIGHT 299702547.0
+/* ── Timing constants ────────────────────────────────────────────── */
+#define POLL_RX_TO_RESP_TX_DLY_UUS  3500
+#define RESP_TX_TO_FINAL_RX_DLY_UUS 1000
+#define FINAL_RX_TIMEOUT_UUS        5000
+#define PRE_TIMEOUT                   64
+#define POLL_TX_TO_RESP_RX_DLY_UUS  (POLL_RX_TO_RESP_TX_DLY_UUS - 200)
+#define RESP_RX_TO_FINAL_TX_DLY_UUS 3500
+#define RESP_RX_TIMEOUT_UUS         1000
 
-/* ── Frame templates ──────────────────────────────────────────────── */
-#define FRAME_HDR_LEN     10  /* bytes before function-specific payload */
-#define ADDR_DST_IDX       5
-#define ADDR_SRC_IDX       7
-#define SEQ_IDX            2
-#define FUNC_IDX           9
+/* Inter-ranging interval: tag waits this long after completing (or failing)
+ * a cycle before starting the next POLL. Anchor has no sleep — it goes
+ * straight back to RX after each cycle. */
+#define RANGING_INTERVAL_MS  200
 
-/* FINAL message timestamp field indices */
-#define FINAL_POLL_TX_TS_IDX  10
-#define FINAL_RESP_RX_TS_IDX  14
-#define FINAL_TX_TS_IDX       18
-#define FINAL_MSG_LEN         22  /* 10 header + 12 timestamps */
+#define UUS_TO_DWT_TIME  65536
+#define SPEED_OF_LIGHT   299702547.0
 
+/* ── Frame definitions ───────────────────────────────────────────── */
+#define ALL_MSG_COMMON_LEN        10
+#define ALL_MSG_SN_IDX             2
+#define FINAL_MSG_POLL_TX_TS_IDX  10
+#define FINAL_MSG_RESP_RX_TS_IDX  14
+#define FINAL_MSG_FINAL_TX_TS_IDX 18
+
+/* Initiator (tag) frames */
 static uint8_t tx_poll_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
-                                   0xFF, 0xFF,         /* dst: broadcast */
-                                   0x00, 0x00,         /* src: filled at init */
-                                   UWB_FC_POLL };
-
-static uint8_t tx_resp_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
-                                   0x00, 0x00,         /* dst: filled per exchange */
-                                   0x00, 0x00,         /* src: filled at init */
-                                   UWB_FC_RESP, 0x02, 0x00, 0x00 };
-
+                                   'W','A','V','E', 0x21 };
+static uint8_t rx_resp_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
+                                   'V','E','W','A', 0x10, 0x02, 0, 0 };
 static uint8_t tx_final_msg[] = { 0x41, 0x88, 0, 0xCA, 0xDE,
-                                   0x00, 0x00,         /* dst: anchor addr */
-                                   0x00, 0x00,         /* src: filled at init */
-                                   UWB_FC_FINAL,
-                                   0,0,0,0,            /* poll TX ts */
-                                   0,0,0,0,            /* resp RX ts */
-                                   0,0,0,0 };          /* final TX ts */
+                                   'W','A','V','E', 0x23,
+                                   0,0,0,0, 0,0,0,0, 0,0,0,0 };
+
+/* Responder (anchor) frames */
+static uint8_t rx_poll_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
+                                   'W','A','V','E', 0x21, 0, 0 };
+static uint8_t tx_resp_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
+                                   'V','E','W','A', 0x10, 0x02, 0, 0, 0, 0 };
+static uint8_t rx_final_msg[] = { 0x41, 0x88, 0, 0xCA, 0xDE,
+                                   'W','A','V','E', 0x23,
+                                   0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0 };
 
 #define RX_BUF_LEN 24
 static uint8_t rx_buffer[RX_BUF_LEN];
 
 static uint8_t frame_seq_nb = 0;
-static uint16_t my_addr;
-static uwb_distance_cb_t distance_cb;
 
-/* ── UWB thread ───────────────────────────────────────────────────── */
-#define UWB_THREAD_STACK_SIZE 2048
-#define UWB_THREAD_PRIORITY   5
+/* ── IRQ event signalling ─────────────────────────────────────────── */
+/*
+ * Four semaphores, one per DW3000 event type. The UWB thread waits on
+ * whichever event it expects next. Callbacks run in the system workqueue
+ * (submitted by dw3000_hw_isr_work_handler) and give the appropriate sem.
+ */
+static K_SEM_DEFINE(sem_tx_done, 0, 1);
+static K_SEM_DEFINE(sem_rx_ok,   0, 1);
+static K_SEM_DEFINE(sem_rx_to,   0, 1);
+static K_SEM_DEFINE(sem_rx_err,  0, 1);
 
-K_THREAD_STACK_DEFINE(uwb_thread_stack, UWB_THREAD_STACK_SIZE);
-static struct k_thread uwb_thread_data;
+/* Event type returned by wait_for_event() */
+typedef enum {
+    EVT_TX_DONE,
+    EVT_RX_OK,
+    EVT_RX_TO,
+    EVT_RX_ERR,
+} uwb_event_t;
 
-/* ── Helper: read 40-bit TX timestamp ─────────────────────────────── */
-static uint64_t get_tx_timestamp_u64(void)
+/* ── DW3000 callbacks (called from system workqueue via dwt_isr()) ── */
+static void cb_tx_done(const dwt_cb_data_t *data)
 {
-    uint8_t ts_tab[5];
-    dwt_readtxtimestamp(ts_tab);
-    uint64_t ts = 0;
-    for (int i = 4; i >= 0; i--) {
-        ts = (ts << 8) | ts_tab[i];
-    }
-    return ts;
+    ARG_UNUSED(data);
+    k_sem_give(&sem_tx_done);
 }
 
-/* ── Helper: read 40-bit RX timestamp ─────────────────────────────── */
-static uint64_t get_rx_timestamp_u64(void)
+static void cb_rx_ok(const dwt_cb_data_t *data)
 {
-    uint8_t ts_tab[5];
-    dwt_readrxtimestamp(ts_tab, DWT_IP_M); /* DWT_IP_M = Ipatov main (non-STS mode) */
-    uint64_t ts = 0;
-    for (int i = 4; i >= 0; i--) {
-        ts = (ts << 8) | ts_tab[i];
-    }
-    return ts;
+    ARG_UNUSED(data);
+    k_sem_give(&sem_rx_ok);
 }
 
-/* ── Helper: store 4-byte little-endian timestamp in frame ─────────── */
-static void ts_set_32(uint8_t *field, uint64_t ts)
+static void cb_rx_to(const dwt_cb_data_t *data)
 {
-    uint32_t ts32 = (uint32_t)ts;
-    field[0] = (uint8_t)(ts32);
-    field[1] = (uint8_t)(ts32 >> 8);
-    field[2] = (uint8_t)(ts32 >> 16);
-    field[3] = (uint8_t)(ts32 >> 24);
+    ARG_UNUSED(data);
+    k_sem_give(&sem_rx_to);
 }
 
-/* ── Helper: read 4-byte little-endian timestamp from frame ─────────── */
-static void ts_get_32(const uint8_t *field, uint32_t *ts)
+static void cb_rx_err(const dwt_cb_data_t *data)
 {
-    *ts = (uint32_t)field[0]
-        | ((uint32_t)field[1] << 8)
-        | ((uint32_t)field[2] << 16)
-        | ((uint32_t)field[3] << 24);
+    ARG_UNUSED(data);
+    k_sem_give(&sem_rx_err);
 }
 
-/* ── Helper: poll DW3000 status register until bits set ──────────── */
-static void wait_for_status(uint32_t *result, uint32_t mask)
+/* Wait for the next DW3000 event, with a timeout in milliseconds.
+ * Returns which event fired, or EVT_RX_TO on timeout. */
+static uwb_event_t wait_for_event(k_timeout_t timeout)
 {
-    uint32_t reg;
-    do {
-        reg = dwt_readsysstatuslo();
-    } while (!(reg & mask));
-    if (result) {
-        *result = reg;
-    }
-}
-
-/* ── Helper: write 16-bit address into frame (little-endian) ──────── */
-static void frame_set_addr(uint8_t *frame, int idx, uint16_t addr)
-{
-    frame[idx]     = (uint8_t)(addr & 0xFF);
-    frame[idx + 1] = (uint8_t)(addr >> 8);
-}
-
-/* ── Helper: read 16-bit address from frame (little-endian) ─────────*/
-static uint16_t frame_get_addr(const uint8_t *frame, int idx)
-{
-    return (uint16_t)frame[idx] | ((uint16_t)frame[idx + 1] << 8);
-}
-
-/* ── DS-TWR Anchor (Responder) Logic ─────────────────────────────── */
-static void anchor_ranging_loop(void)
-{
-    LOG_INF("UWB Anchor 0x%04X: Listening for tags", my_addr);
+    /* Poll all four semaphores with a small spin interval.
+     * k_sem_take with K_NO_WAIT on each, then yield. The total
+     * wait is bounded by the timeout. */
+    int64_t deadline = k_uptime_get() + k_ticks_to_ms_floor64(timeout.ticks);
 
     while (1) {
-        uint32_t status_reg;
+        if (k_sem_take(&sem_rx_ok,   K_NO_WAIT) == 0) return EVT_RX_OK;
+        if (k_sem_take(&sem_tx_done, K_NO_WAIT) == 0) return EVT_TX_DONE;
+        if (k_sem_take(&sem_rx_to,   K_NO_WAIT) == 0) return EVT_RX_TO;
+        if (k_sem_take(&sem_rx_err,  K_NO_WAIT) == 0) return EVT_RX_ERR;
 
-        /* Enable receiver with no timeout - wait indefinitely for a POLL */
+        if (k_uptime_get() >= deadline) return EVT_RX_TO;
+
+        k_sleep(K_USEC(100));
+    }
+}
+
+/* ── Timestamp helpers ───────────────────────────────────────────── */
+static uint64_t get_tx_timestamp_u64(void)
+{
+    uint8_t ts[5];
+    dwt_readtxtimestamp(ts);
+    uint64_t t = 0;
+    for (int i = 4; i >= 0; i--) t = (t << 8) | ts[i];
+    return t;
+}
+
+static uint64_t get_rx_timestamp_u64(void)
+{
+    uint8_t ts[5];
+    dwt_readrxtimestamp(ts, DWT_IP_M);
+    uint64_t t = 0;
+    for (int i = 4; i >= 0; i--) t = (t << 8) | ts[i];
+    return t;
+}
+
+static void final_msg_set_ts(uint8_t *ts_field, uint64_t ts)
+{
+    for (int i = 0; i < 4; i++)
+        ts_field[i] = (uint8_t)(ts >> (i * 8));
+}
+
+static void final_msg_get_ts(const uint8_t *ts_field, uint32_t *ts)
+{
+    *ts = 0;
+    for (int i = 0; i < 4; i++)
+        *ts |= (uint32_t)ts_field[i] << (i * 8);
+}
+
+/* ── UWB thread ───────────────────────────────────────────────────── */
+#define UWB_STACK_SIZE 2048
+#define UWB_PRIORITY   0
+
+K_THREAD_STACK_DEFINE(uwb_stack, UWB_STACK_SIZE);
+static struct k_thread uwb_thread_data;
+
+static uwb_distance_cb_t distance_cb;
+
+/* ── Responder (anchor) ──────────────────────────────────────────── */
+static void responder_loop(void)
+{
+    LOG_INF("DS-TWR Responder ready (interrupt-driven)");
+
+    while (1) {
+        /* ── Wait for POLL ── */
         dwt_setpreambledetecttimeout(0);
         dwt_setrxtimeout(0);
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
-        wait_for_status(&status_reg,
-            DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
-
-        if (!(status_reg & DWT_INT_RXFCG_BIT_MASK)) {
+        uwb_event_t evt = wait_for_event(K_FOREVER);
+        if (evt != EVT_RX_OK) {
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
             continue;
         }
 
-        dwt_writesysstatuslo(DWT_INT_RXFCG_BIT_MASK);
-
         uint16_t frame_len = dwt_getframelength(NULL);
-        if (frame_len > RX_BUF_LEN) {
-            continue;
-        }
-        dwt_readrxdata(rx_buffer, frame_len, 0);
+        if (frame_len <= RX_BUF_LEN)
+            dwt_readrxdata(rx_buffer, frame_len, 0);
 
-        /* Validate: must be addressed to us or broadcast, function = POLL */
-        uint16_t dst = frame_get_addr(rx_buffer, ADDR_DST_IDX);
-        if (dst != my_addr && dst != UWB_BROADCAST_ADDR) {
+        rx_buffer[ALL_MSG_SN_IDX] = 0;
+        if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) != 0)
             continue;
-        }
-        if (rx_buffer[FUNC_IDX] != UWB_FC_POLL) {
-            continue;
-        }
 
-        uint16_t tag_addr = frame_get_addr(rx_buffer, ADDR_SRC_IDX);
+        /* ── Send RESP, arm for FINAL ──
+         * Critical section: compute delayed TX time and start TX.
+         * Must not be preempted between reading the RX timestamp and
+         * calling dwt_starttx(), or the delay calculation goes stale. */
+        k_sched_lock();
         uint64_t poll_rx_ts = get_rx_timestamp_u64();
-
-        /* Schedule delayed response */
         uint32_t resp_tx_time =
             (poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
         dwt_setdelayedtrxtime(resp_tx_time);
-
         dwt_setrxaftertxdelay(RESP_TX_TO_FINAL_RX_DLY_UUS);
         dwt_setrxtimeout(FINAL_RX_TIMEOUT_UUS);
-        dwt_setpreambledetecttimeout(PRE_TIMEOUT);
+        dwt_setpreambledetecttimeout(0);
 
-        /* Build RESP frame: dst=tag, src=anchor */
-        tx_resp_msg[SEQ_IDX] = frame_seq_nb;
-        frame_set_addr(tx_resp_msg, ADDR_DST_IDX, tag_addr);
-        frame_set_addr(tx_resp_msg, ADDR_SRC_IDX, my_addr);
-
+        tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
         dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0);
-        dwt_writetxfctrl(sizeof(tx_resp_msg) + FCS_LEN, 0, 1);
+        dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1);
+        int tx_ret = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED);
+        k_sched_unlock();
 
-        int ret = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED);
-        if (ret == DWT_ERROR) {
-            LOG_WRN("RESP TX too late, retrying");
+        if (tx_ret == DWT_ERROR) {
+            LOG_WRN("RESP TX too late");
             continue;
         }
 
-        /* Wait for FINAL from tag */
-        wait_for_status(&status_reg,
-            DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+        /* ── Wait for RESP TX done, then FINAL ──
+         * The TX done event fires first (hardware auto-switches to RX after
+         * RESP via DWT_RESPONSE_EXPECTED), then we wait for the FINAL. */
+        evt = wait_for_event(K_MSEC(10));
+        if (evt != EVT_TX_DONE) {
+            LOG_WRN("RESP TX confirmation lost");
+            dwt_forcetrxoff();
+            continue;
+        }
+
+        evt = wait_for_event(K_MSEC(20));
         frame_seq_nb++;
 
-        if (!(status_reg & DWT_INT_RXFCG_BIT_MASK)) {
+        if (evt != EVT_RX_OK) {
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+            LOG_WRN("No FINAL received");
             continue;
         }
 
         dwt_writesysstatuslo(DWT_INT_RXFCG_BIT_MASK | DWT_INT_TXFRS_BIT_MASK);
 
         frame_len = dwt_getframelength(NULL);
-        if (frame_len > RX_BUF_LEN) {
-            continue;
-        }
-        dwt_readrxdata(rx_buffer, frame_len, 0);
+        if (frame_len <= RX_BUF_LEN)
+            dwt_readrxdata(rx_buffer, frame_len, 0);
 
-        /* Validate FINAL: from same tag, to us */
-        dst = frame_get_addr(rx_buffer, ADDR_DST_IDX);
-        uint16_t src = frame_get_addr(rx_buffer, ADDR_SRC_IDX);
-        if (dst != my_addr || src != tag_addr || rx_buffer[FUNC_IDX] != UWB_FC_FINAL) {
+        rx_buffer[ALL_MSG_SN_IDX] = 0;
+        if (memcmp(rx_buffer, rx_final_msg, ALL_MSG_COMMON_LEN) != 0)
             continue;
-        }
 
-        /* Retrieve response TX and final RX timestamps */
-        uint64_t resp_tx_ts = get_tx_timestamp_u64();
+        /* ── Compute distance ── */
+        uint64_t resp_tx_ts  = get_tx_timestamp_u64();
         uint64_t final_rx_ts = get_rx_timestamp_u64();
 
-        /* Extract initiator's timestamps from FINAL payload */
         uint32_t poll_tx_ts_i, resp_rx_ts_i, final_tx_ts_i;
-        ts_get_32(&rx_buffer[FINAL_POLL_TX_TS_IDX], &poll_tx_ts_i);
-        ts_get_32(&rx_buffer[FINAL_RESP_RX_TS_IDX], &resp_rx_ts_i);
-        ts_get_32(&rx_buffer[FINAL_TX_TS_IDX],      &final_tx_ts_i);
+        final_msg_get_ts(&rx_buffer[FINAL_MSG_POLL_TX_TS_IDX],  &poll_tx_ts_i);
+        final_msg_get_ts(&rx_buffer[FINAL_MSG_RESP_RX_TS_IDX],  &resp_rx_ts_i);
+        final_msg_get_ts(&rx_buffer[FINAL_MSG_FINAL_TX_TS_IDX], &final_tx_ts_i);
 
-        /* DS-TWR distance formula (32-bit truncation handles clock wrap) */
         uint32_t poll_rx_ts_32  = (uint32_t)poll_rx_ts;
         uint32_t resp_tx_ts_32  = (uint32_t)resp_tx_ts;
         uint32_t final_rx_ts_32 = (uint32_t)final_rx_ts;
@@ -306,197 +307,199 @@ static void anchor_ranging_loop(void)
         double Da = (double)(final_tx_ts_i  - resp_rx_ts_i);
         double Db = (double)(resp_tx_ts_32  - poll_rx_ts_32);
 
-        double tof_dtu = ((Ra * Rb) - (Da * Db)) / (Ra + Rb + Da + Db);
+        double tof_dtu = (Ra * Rb - Da * Db) / (Ra + Rb + Da + Db);
         double tof_s   = tof_dtu * DWT_TIME_UNITS;
         float  dist_m  = (float)(tof_s * SPEED_OF_LIGHT);
 
-        LOG_INF("Anchor 0x%04X <-> Tag 0x%04X : %.3f m",
-                my_addr, tag_addr, (double)dist_m);
+        LOG_INF("Distance: %.3f m", (double)dist_m);
 
-        if (distance_cb) {
-            distance_cb(my_addr, tag_addr, dist_m);
-        }
+        if (distance_cb)
+            distance_cb(CONFIG_UWB_NODE_SHORT_ADDR, 0x0100, dist_m);
     }
 }
 
-/* ── DS-TWR Tag (Initiator) Logic ─────────────────────────────────── */
-static void tag_ranging_loop(void)
+/* ── Initiator (tag) ─────────────────────────────────────────────── */
+static void initiator_loop(void)
 {
-    LOG_INF("UWB Tag 0x%04X: Starting anchor sweep", my_addr);
-
-    /* Set up RX-after-TX delay and timeout for RESP waiting */
-    dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-    dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
-    dwt_setpreambledetecttimeout(PRE_TIMEOUT);
+    LOG_INF("DS-TWR Initiator ready (interrupt-driven)");
 
     while (1) {
-        for (int i = 0; i < UWB_MAX_ANCHORS; i++) {
-            uint16_t anchor_addr = anchor_list[i];
-            if (anchor_addr == 0x0000) {
-                break; /* End of list sentinel */
-            }
+        /* ── Send POLL, arm RX for RESP ── */
+        dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
+        dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
+        dwt_setpreambledetecttimeout(PRE_TIMEOUT);
 
-            uint32_t status_reg;
+        LOG_INF("[TAG] Sending POLL (seq=%u)", frame_seq_nb);
+        thread_coap_send_event(CONFIG_UWB_NODE_SHORT_ADDR, UWB_EVT_POLL_TX, frame_seq_nb);
+        tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+        dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);
+        dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1);
+        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
-            /* Send POLL to this anchor */
-            tx_poll_msg[SEQ_IDX] = frame_seq_nb;
-            frame_set_addr(tx_poll_msg, ADDR_DST_IDX, anchor_addr);
-            frame_set_addr(tx_poll_msg, ADDR_SRC_IDX, my_addr);
+        /* Wait for TX done (POLL sent) */
+        uwb_event_t evt = wait_for_event(K_MSEC(10));
+        if (evt != EVT_TX_DONE) {
+            LOG_WRN("POLL TX confirmation lost");
+            dwt_forcetrxoff();
+            k_sleep(K_MSEC(RANGING_INTERVAL_MS));
+            continue;
+        }
+        LOG_INF("[TAG] POLL sent, waiting for RESP...");
 
-            dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);
-            dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1);
-            dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+        /* Wait for RESP */
+        evt = wait_for_event(K_MSEC(20));
+        frame_seq_nb++;
 
-            wait_for_status(&status_reg,
-                DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
-            frame_seq_nb++;
-
-            if (!(status_reg & DWT_INT_RXFCG_BIT_MASK)) {
-                /* No RESP received from this anchor (out of range / busy) */
-                dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR
-                                     | DWT_INT_TXFRS_BIT_MASK);
-                LOG_DBG("No RESP from anchor 0x%04X", anchor_addr);
-                continue;
-            }
-
-            dwt_writesysstatuslo(DWT_INT_RXFCG_BIT_MASK | DWT_INT_TXFRS_BIT_MASK);
-
-            uint16_t frame_len = dwt_getframelength(NULL);
-            if (frame_len > RX_BUF_LEN) {
-                continue;
-            }
-            dwt_readrxdata(rx_buffer, frame_len, 0);
-
-            /* Validate RESP: from expected anchor, to us, function=RESP */
-            uint16_t dst = frame_get_addr(rx_buffer, ADDR_DST_IDX);
-            uint16_t src = frame_get_addr(rx_buffer, ADDR_SRC_IDX);
-            if (dst != my_addr || src != anchor_addr ||
-                rx_buffer[FUNC_IDX] != UWB_FC_RESP) {
-                continue;
-            }
-
-            /* Read timestamps and schedule delayed FINAL */
-            uint64_t poll_tx_ts = get_tx_timestamp_u64();
-            uint64_t resp_rx_ts = get_rx_timestamp_u64();
-
-            uint32_t final_tx_time =
-                (resp_rx_ts + (RESP_RX_TO_FINAL_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
-            dwt_setdelayedtrxtime(final_tx_time);
-
-            /* Predicted final TX timestamp (for embedding in FINAL frame) */
-            uint64_t final_tx_ts =
-                (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8)
-                + CONFIG_UWB_TX_ANTENNA_DELAY;
-
-            /* Build FINAL frame with all three timestamps */
-            tx_final_msg[SEQ_IDX] = frame_seq_nb;
-            frame_set_addr(tx_final_msg, ADDR_DST_IDX, anchor_addr);
-            frame_set_addr(tx_final_msg, ADDR_SRC_IDX, my_addr);
-            ts_set_32(&tx_final_msg[FINAL_POLL_TX_TS_IDX], poll_tx_ts);
-            ts_set_32(&tx_final_msg[FINAL_RESP_RX_TS_IDX], resp_rx_ts);
-            ts_set_32(&tx_final_msg[FINAL_TX_TS_IDX],      final_tx_ts);
-
-            dwt_writetxdata(sizeof(tx_final_msg), tx_final_msg, 0);
-            dwt_writetxfctrl(sizeof(tx_final_msg) + FCS_LEN, 0, 1);
-
-            int ret = dwt_starttx(DWT_START_TX_DELAYED);
-            if (ret == DWT_SUCCESS) {
-                wait_for_status(NULL, DWT_INT_TXFRS_BIT_MASK);
-                dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
-                frame_seq_nb++;
-                LOG_DBG("FINAL sent to anchor 0x%04X", anchor_addr);
-            } else {
-                LOG_WRN("FINAL TX late for anchor 0x%04X", anchor_addr);
-                dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK | SYS_STATUS_ALL_RX_ERR);
-            }
-
-            /* Small inter-anchor gap to avoid collisions */
-            k_msleep(50);
+        if (evt != EVT_RX_OK) {
+            dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR |
+                                 DWT_INT_TXFRS_BIT_MASK);
+            LOG_INF("[TAG] No RESP received");
+            thread_coap_send_event(CONFIG_UWB_NODE_SHORT_ADDR, UWB_EVT_NO_RESP, frame_seq_nb);
+            k_sleep(K_MSEC(RANGING_INTERVAL_MS));
+            continue;
         }
 
-        /* Wait between full ranging sweeps */
-        k_msleep(CONFIG_UWB_RANGING_INTERVAL_MS);
+        LOG_INF("[TAG] RESP received");
+        thread_coap_send_event(CONFIG_UWB_NODE_SHORT_ADDR, UWB_EVT_RESP_RX, frame_seq_nb);
+        dwt_writesysstatuslo(DWT_INT_RXFCG_BIT_MASK | DWT_INT_TXFRS_BIT_MASK);
+
+        uint16_t frame_len = dwt_getframelength(NULL);
+        if (frame_len <= RX_BUF_LEN)
+            dwt_readrxdata(rx_buffer, frame_len, 0);
+
+        rx_buffer[ALL_MSG_SN_IDX] = 0;
+        if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) != 0) {
+            k_sleep(K_MSEC(RANGING_INTERVAL_MS));
+            continue;
+        }
+
+        /* ── Send FINAL ──
+         * Critical section: compute delayed TX time from RESP RX timestamp. */
+        k_sched_lock();
+        uint64_t poll_tx_ts = get_tx_timestamp_u64();
+        uint64_t resp_rx_ts = get_rx_timestamp_u64();
+
+        uint32_t final_tx_time =
+            (resp_rx_ts + (RESP_RX_TO_FINAL_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+        dwt_setdelayedtrxtime(final_tx_time);
+
+        uint64_t final_tx_ts =
+            (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+
+        final_msg_set_ts(&tx_final_msg[FINAL_MSG_POLL_TX_TS_IDX],  poll_tx_ts);
+        final_msg_set_ts(&tx_final_msg[FINAL_MSG_RESP_RX_TS_IDX],  resp_rx_ts);
+        final_msg_set_ts(&tx_final_msg[FINAL_MSG_FINAL_TX_TS_IDX], final_tx_ts);
+
+        LOG_INF("[TAG] Sending FINAL (seq=%u)", frame_seq_nb);
+        thread_coap_send_event(CONFIG_UWB_NODE_SHORT_ADDR, UWB_EVT_FINAL_TX, frame_seq_nb);
+        tx_final_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+        dwt_writetxdata(sizeof(tx_final_msg), tx_final_msg, 0);
+        dwt_writetxfctrl(sizeof(tx_final_msg) + FCS_LEN, 0, 1);
+        int final_ret = dwt_starttx(DWT_START_TX_DELAYED);
+        k_sched_unlock();
+
+        if (final_ret == DWT_SUCCESS) {
+            evt = wait_for_event(K_MSEC(10));
+            if (evt == EVT_TX_DONE) {
+                LOG_INF("[TAG] FINAL sent — cycle complete (seq=%u)", frame_seq_nb);
+                frame_seq_nb++;
+            } else {
+                LOG_WRN("FINAL TX confirmation lost");
+                dwt_forcetrxoff();
+            }
+        } else {
+            LOG_WRN("FINAL TX too late");
+            dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK | SYS_STATUS_ALL_RX_ERR);
+        }
+
+        k_sleep(K_MSEC(RANGING_INTERVAL_MS));
     }
 }
 
-/* ── UWB Thread Entry Point ──────────────────────────────────────── */
+/* ── Thread entry ─────────────────────────────────────────────────── */
 static void uwb_thread_entry(void *p1, void *p2, void *p3)
 {
     ARG_UNUSED(p1); ARG_UNUSED(p2); ARG_UNUSED(p3);
-
-    if (IS_ENABLED(CONFIG_NODE_ROLE_ANCHOR)) {
-        anchor_ranging_loop();
-    } else {
-        tag_ranging_loop();
-    }
+    if (IS_ENABLED(CONFIG_NODE_ROLE_ANCHOR))
+        responder_loop();
+    else
+        initiator_loop();
 }
 
 /* ── Public API ───────────────────────────────────────────────────── */
-
 int uwb_manager_init(void)
 {
-    int ret;
-
-    my_addr = CONFIG_UWB_NODE_SHORT_ADDR;
-
-    /* Patch PAN ID from config */
-    uint16_t pan_id = CONFIG_UWB_PAN_ID;
-    tx_poll_msg[3]  = tx_resp_msg[3]  = tx_final_msg[3]  = (uint8_t)(pan_id & 0xFF);
-    tx_poll_msg[4]  = tx_resp_msg[4]  = tx_final_msg[4]  = (uint8_t)(pan_id >> 8);
-
-    /* Hardware init: SPI + GPIO */
-    ret = dw3000_hw_init();
+    int ret = dw3000_hw_init();
     if (ret < 0) {
         LOG_ERR("dw3000_hw_init failed: %d", ret);
         return ret;
     }
 
-    /* Configure SPI fast rate */
     dw3000_spi_speed_fast();
-
-    /* Hardware reset */
     dw3000_hw_reset();
     k_msleep(2);
 
-    /* Probe for DW3000 device driver */
-    dwt_probe((struct dwt_probe_s *)&dw3000_probe_interf);
-
-    /* Wait for IDLE_RC state */
-    uint32_t timeout = 1000;
-    while (!dwt_checkidlerc() && timeout--) {
-        k_msleep(1);
+    if (dwt_probe((struct dwt_probe_s *)&dw3000_probe_interf) != DWT_SUCCESS) {
+        LOG_ERR("dwt_probe failed");
+        return -EIO;
     }
-    if (timeout == 0) {
-        LOG_ERR("DW3000 did not reach IDLE_RC");
+    LOG_INF("dwt_probe OK");
+
+    uint32_t timeout = 200;
+    while (!dwt_checkidlerc() && timeout--)
+        k_msleep(1);
+    if (!timeout) {
+        LOG_ERR("DW3000 not idle");
         return -ETIMEDOUT;
     }
 
-    /* Initialize device */
     if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR) {
         LOG_ERR("dwt_initialise failed");
         return -EIO;
     }
 
-    /* Apply RF configuration */
     if (dwt_configure(&uwb_config) == DWT_ERROR) {
-        LOG_ERR("dwt_configure failed (PLL or RX calibration)");
+        LOG_ERR("dwt_configure failed");
         return -EIO;
     }
 
-    /* Apply TX power / spectrum config */
     dwt_configuretxrf(&txconfig);
-
-    /* Set antenna delays */
-    dwt_setrxantennadelay(CONFIG_UWB_RX_ANTENNA_DELAY);
-    dwt_settxantennadelay(CONFIG_UWB_TX_ANTENNA_DELAY);
-
-    /* Enable LNA/PA for better range */
+    dwt_setrxantennadelay(RX_ANT_DLY);
+    dwt_settxantennadelay(TX_ANT_DLY);
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
+    dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
-    LOG_INF("DW3000 initialized. Node addr=0x%04X role=%s",
-            my_addr,
-            IS_ENABLED(CONFIG_NODE_ROLE_ANCHOR) ? "ANCHOR" : "TAG");
+    /* Register event callbacks */
+    static dwt_callbacks_s cbs = {
+        .cbTxDone = cb_tx_done,
+        .cbRxOk   = cb_rx_ok,
+        .cbRxTo   = cb_rx_to,
+        .cbRxErr  = cb_rx_err,
+    };
+    dwt_setcallbacks(&cbs);
 
+    /* Enable DW3000 interrupts: TX done, RX good, RX timeout, RX errors */
+    dwt_setinterrupt(
+        DWT_INT_TXFRS_BIT_MASK |
+        DWT_INT_RXFCG_BIT_MASK |
+        DWT_INT_RXFTO_BIT_MASK |
+        DWT_INT_RXPTO_BIT_MASK |
+        DWT_INT_RXPHE_BIT_MASK |
+        DWT_INT_RXFCE_BIT_MASK |
+        DWT_INT_RXFSL_BIT_MASK |
+        DWT_INT_RXSTO_BIT_MASK,
+        0,
+        DWT_ENABLE_INT_ONLY);
+
+    /* Hook the IRQ GPIO pin to the driver's work-queue ISR */
+    ret = dw3000_hw_init_interrupt();
+    if (ret < 0) {
+        LOG_ERR("IRQ init failed: %d", ret);
+        return ret;
+    }
+
+    LOG_INF("DW3000 ready (IRQ). Role: %s",
+            IS_ENABLED(CONFIG_NODE_ROLE_ANCHOR) ? "RESPONDER" : "INITIATOR");
     return 0;
 }
 
@@ -507,10 +510,10 @@ void uwb_manager_set_distance_cb(uwb_distance_cb_t cb)
 
 int uwb_manager_start(void)
 {
-    k_thread_create(&uwb_thread_data, uwb_thread_stack,
-                    K_THREAD_STACK_SIZEOF(uwb_thread_stack),
+    k_thread_create(&uwb_thread_data, uwb_stack,
+                    K_THREAD_STACK_SIZEOF(uwb_stack),
                     uwb_thread_entry, NULL, NULL, NULL,
-                    UWB_THREAD_PRIORITY, 0, K_NO_WAIT);
-    k_thread_name_set(&uwb_thread_data, "uwb_ranging");
+                    UWB_PRIORITY, 0, K_NO_WAIT);
+    k_thread_name_set(&uwb_thread_data, "uwb");
     return 0;
 }

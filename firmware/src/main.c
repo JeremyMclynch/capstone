@@ -11,6 +11,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
 #include <dk_buttons_and_leds.h>
 
 #include "uwb_manager.h"
@@ -42,6 +43,7 @@ int main(void)
 {
     int ret;
 
+    printk("=== UWB Mesh Tracker boot ===\n");
     LOG_INF("=== UWB Mesh Tracker ===");
     LOG_INF("Board: %s | Role: %s | Addr: 0x%04X",
             CONFIG_BOARD,
