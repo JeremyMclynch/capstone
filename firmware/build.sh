@@ -79,21 +79,33 @@ fi
 # Run west build from inside the SDK workspace
 cd "${SDK_DIR}"
 
+EXTRA_ARGS="-DZEPHYR_EXTRA_MODULES=${SCRIPT_DIR}/../zephyr-dw3000-decadriver"
+
+# DWM3001CDK (nRF52833, 512KB) needs single-slot MCUboot + serial recovery
+if [[ "$BOARD" == *"dwm3001"* ]]; then
+    EXTRA_ARGS="$EXTRA_ARGS -DSB_OVERLAY_CONFIG=${APP_DIR}/sysbuild_dwm3001cdk.conf"
+    EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_OVERLAY_CONFIG=${APP_DIR}/sysbuild/mcuboot_dwm3001cdk/serial_recovery.conf"
+    EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_DTC_OVERLAY_FILE=${APP_DIR}/sysbuild/mcuboot_dwm3001cdk/serial_recovery.overlay"
+fi
+
 west build \
     --board "${BOARD}" \
     --source-dir "${APP_DIR}" \
     --build-dir "${BUILD_DIR}" \
     -- \
-    -DZEPHYR_EXTRA_MODULES="${SCRIPT_DIR}/../zephyr-dw3000-decadriver"
+    $EXTRA_ARGS
 
 echo ""
 echo "=== Build successful ==="
-echo "Firmware: ${BUILD_DIR}/zephyr/zephyr.hex"
+echo "Flash image: ${BUILD_DIR}/merged.hex"
+echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
 
-# Flash if requested
+# Flash if requested (uses nrfutil to avoid PYTHONHOME conflicts with west flash)
 if [ "$DO_FLASH" = true ]; then
     echo ""
     echo "[build.sh] Flashing ${BOARD}..."
-    west flash --build-dir "${BUILD_DIR}"
+    # Use merged.hex which includes MCUboot + signed app
+    unset PYTHONHOME PYTHONPATH
+    nrfutil device program --firmware "${BUILD_DIR}/merged.hex"
     echo "=== Flash complete ==="
 fi

@@ -68,17 +68,39 @@ python3 monitor.py
 cd server && python3 main.py
 ```
 
+## OTA Firmware Updates
+
+MCUmgr SMP over UDP + MCUboot bootloader. Signed images uploaded over Thread IPv6:
+```bash
+# Install mcumgr CLI (one-time)
+go install github.com/apache/mynewt-mcumgr-cli/mcumgr@latest
+
+# Upload new firmware
+./scripts/ota_update.sh <device-ipv6-addr> firmware/build/<board>/firmware/zephyr/zephyr.signed.bin
+
+# Bump version before building update (firmware/VERSION)
+```
+
+Anchor (nRF52840): dual-slot with swap + rollback over Thread. Tag (DWM3001CDK): single-slot MCUboot with serial recovery — hold button (P0.02) during reset, then upload via `mcumgr --conntype serial`. Flash both boards using `merged.hex` (not `zephyr.hex`) to include MCUboot + signed app.
+
+Tag serial recovery:
+```bash
+# Hold P0.02 button, reset board, then:
+mcumgr --conntype serial --connstring dev=/dev/ttyACM3,baud=115200 image upload firmware/build/decawave_dwm3001cdk/firmware/zephyr/zephyr.signed.bin
+```
+
 ## Architecture
 
 Shared firmware source builds for both boards; board-specific config in `firmware/boards/*.conf` and `*.overlay`. Role (anchor/tag) is set via Kconfig defaults per board but overridable at runtime via UCI + NVS.
 
 **Firmware modules** (all in `firmware/src/`):
-- `main.c` — boot sequence: device_config → thread_coap → uwb_manager → uci_uart → autostart
+- `main.c` — boot sequence: device_config → thread_coap → uci_coap → uwb_manager → uci_uart → autostart
 - `uwb_manager.c/h` — DS-TWR ranging loop (interrupt-driven, priority 0), start/stop/status API
 - `thread_coap.c/h` — Thread join + CoAP POST `/distance` (anchor) and `/event` (tag) to multicast
 - `device_config.c/h` — NVS-backed persistent config (role, addr, interval, server, autostart)
-- `uci.c/h` — UCI binary protocol parser and command dispatch
+- `uci.c/h` — UCI binary protocol parser and command dispatch (mutex-protected)
 - `uci_uart.c` — UART transport (ISR RX ring buffer → state machine → response TX)
+- `uci_coap.c` — CoAP transport (OT CoAP server, POST /cmd, remote UCI)
 
 **Config layering**: Kconfig defaults → board `.conf` overrides → NVS saved values (loaded by device_config_init at boot)
 

@@ -20,3 +20,11 @@ target_sources(app PRIVATE
 )
 
 target_include_directories(app PRIVATE src)
+
+# Workaround: pm_sysflash.h in the MCUboot utility library only checks
+# CONFIG_SINGLE_APPLICATION_SLOT (an MCUboot-only Kconfig), not
+# CONFIG_MCUBOOT_BOOTLOADER_MODE_SINGLE_APP (the app-level equivalent).
+# Propagate the define so the correct single-slot code path is used.
+if(CONFIG_MCUBOOT_BOOTLOADER_MODE_SINGLE_APP)
+    zephyr_compile_definitions(CONFIG_SINGLE_APPLICATION_SLOT=1)
+endif()

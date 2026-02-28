@@ -31,3 +31,20 @@
         reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
     };
 };
+
+/* Boot mode retention via GPREGRET register — allows entering MCUboot serial
+ * recovery without physical button press (UCI enter-bootloader command).
+ * GPREGRET1 is a 1-byte hardware register that survives soft resets. */
+&gpregret1 {
+	boot_mode0: boot_mode@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
+	};
+};
+
+/ {
+	chosen {
+		zephyr,boot-mode = &boot_mode0;
+	};
+};
