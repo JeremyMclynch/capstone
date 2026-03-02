@@ -1,0 +1,19 @@
+/* MCUboot serial recovery: map button2 (P0.02) as the recovery entrance button */
+/ {
+	aliases {
+		mcuboot-button0 = &button2;
+	};
+
+	chosen {
+		zephyr,boot-mode = &boot_mode0;
+	};
+};
+
+/* Boot mode retention via GPREGRET (shared with app for button-less recovery) */
+&gpregret1 {
+	boot_mode0: boot_mode@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
+	};
+};

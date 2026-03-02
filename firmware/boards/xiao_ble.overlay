@@ -1,0 +1,54 @@
+/*
+ * DWM3000EVB wiring overlay for Seeed XIAO BLE (nRF52840)
+ *
+ * The XIAO has no Arduino header — the DWM3000EVB is connected via
+ * jumper wires to the XIAO's D0–D10 breakout pins.
+ *
+ * Wiring:
+ *   SPI SCK:   D8  (P1.13) — SPI2 clock
+ *   SPI MOSI:  D10 (P1.15) — SPI2 master-out
+ *   SPI MISO:  D9  (P1.14) — SPI2 master-in
+ *   SPI CS:    D0  (P0.02) — chip select (active low)
+ *   IRQ:       D1  (P0.03) — interrupt (active high)
+ *   RESET:     D2  (P0.28) — reset (active low)
+ *   WAKEUP:    D3  (P0.29) — wakeup (active high)
+ *   SPI_POL:   D4  (P0.04) — SPI polarity control
+ *   SPI_PHA:   D5  (P0.05) — SPI phase control
+ *   3V3:       3V3          — power
+ *   GND:       GND          — ground
+ *
+ * UART0 (D6=P1.11 TX, D7=P1.12 RX) remains available for UCI
+ * serial transport via USB-C CDC ACM.
+ *
+ * NOTE: I2C1 is disabled because its SDA/SCL pins (P0.04/P0.05 = D4/D5)
+ * are repurposed for DWM3000EVB SPI_POL/SPI_PHA.
+ */
+
+/* Disable I2C1 — its pins (D4/D5) are used for SPI_POL/SPI_PHA */
+&i2c1 {
+	status = "disabled";
+};
+
+/* Override SPI2 to use SPIM (DMA) instead of SPI (polled) for DW3000 */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&xiao_d 0 GPIO_ACTIVE_LOW>;  /* D0 = P0.02 */
+
+	dw3000: dw3000@0 {
+		compatible = "decawave,dw3000";
+		spi-max-frequency = <16000000>;
+		reg = <0>;
+		irq-gpios     = <&xiao_d 1 GPIO_ACTIVE_HIGH>;  /* D1 = P0.03 */
+		reset-gpios   = <&xiao_d 2 GPIO_ACTIVE_LOW>;   /* D2 = P0.28 */
+		wakeup-gpios  = <&xiao_d 3 GPIO_ACTIVE_HIGH>;  /* D3 = P0.29 */
+		spi-pol-gpios = <&xiao_d 4 GPIO_ACTIVE_LOW>;   /* D4 = P0.04 */
+		spi-pha-gpios = <&xiao_d 5 GPIO_ACTIVE_LOW>;   /* D5 = P0.05 */
+	};
+};
+
+/*
+ * Stock UF2+SoftDevice partition layout (nrf52840_partition_uf2_sdv7.dtsi)
+ * is used as-is. NVS uses the existing storage_partition at 0xED000.
+ * No MCUboot — app flashed via UF2 drag-and-drop.
+ */
