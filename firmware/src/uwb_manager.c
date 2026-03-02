@@ -88,7 +88,7 @@ static uint32_t range_count;
 
 /* Initiator (tag) frames */
 static uint8_t tx_poll_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
-                                   'W','A','V','E', 0x21 };
+                                   'W','A','V','E', 0x21, 0, 0 };
 static uint8_t rx_resp_msg[]  = { 0x41, 0x88, 0, 0xCA, 0xDE,
                                    'V','E','W','A', 0x10, 0x02, 0, 0 };
 static uint8_t tx_final_msg[] = { 0x41, 0x88, 0, 0xCA, 0xDE,
@@ -244,6 +244,9 @@ static void responder_loop(void)
         if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) != 0)
             continue;
 
+        /* Extract tag source address from POLL bytes 10-11 (LE) */
+        uint16_t tag_addr = (uint16_t)rx_buffer[10] | ((uint16_t)rx_buffer[11] << 8);
+
         k_sched_lock();
         uint64_t poll_rx_ts = get_rx_timestamp_u64();
         uint32_t resp_tx_time =
@@ -318,7 +321,7 @@ static void responder_loop(void)
         LOG_INF("Distance: %.3f m", (double)dist_m);
 
         if (distance_cb)
-            distance_cb(g_config.uwb_addr, 0x0100, dist_m);
+            distance_cb(g_config.uwb_addr, tag_addr, dist_m);
     }
 }
 
@@ -356,6 +359,8 @@ static void initiator_loop(void)
         LOG_INF("[TAG] Sending POLL (seq=%u)", frame_seq_nb);
         thread_coap_send_event(g_config.uwb_addr, UWB_EVT_POLL_TX, frame_seq_nb);
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+        tx_poll_msg[10] = (uint8_t)(g_config.uwb_addr & 0xFF);
+        tx_poll_msg[11] = (uint8_t)(g_config.uwb_addr >> 8);
         dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);
         dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1);
         dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);

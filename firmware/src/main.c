@@ -107,6 +107,9 @@ int main(void)
         LOG_INF("Ranging not auto-started (send UCI START command)");
     }
 
+    /* Turn on LED1 to indicate app is running */
+    dk_set_led_on(LED_THREAD_OK);
+
     LOG_INF("Startup complete.");
 
     while (1) {

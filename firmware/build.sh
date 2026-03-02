@@ -8,6 +8,7 @@
 # Examples:
 #   ./build.sh                                  # Build for nRF52840 DK (anchor)
 #   ./build.sh decawave_dwm3001cdk              # Build for DWM3001CDK (tag)
+#   ./build.sh xiao_ble                         # Build for XIAO BLE (tag)
 #   ./build.sh nrf52840dk/nrf52840 --flash      # Build and flash nRF52840 DK
 #   ./build.sh decawave_dwm3001cdk --flash      # Build and flash DWM3001CDK
 #   ./build.sh nrf52840dk/nrf52840 --clean      # Clean rebuild
@@ -15,6 +16,7 @@
 # Board → Default Role:
 #   nrf52840dk/nrf52840     → ANCHOR (addr 0x0001)
 #   decawave_dwm3001cdk     → TAG    (addr 0x0100)
+#   xiao_ble                → TAG    (addr 0x0200)
 #
 # To build as TAG on nRF52840DK, add:
 #   -- -DCONFIG_NODE_ROLE_TAG=y -DCONFIG_NODE_ROLE_ANCHOR=n \
@@ -88,24 +90,46 @@ if [[ "$BOARD" == *"dwm3001"* ]]; then
     EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_DTC_OVERLAY_FILE=${APP_DIR}/sysbuild/mcuboot_dwm3001cdk/serial_recovery.overlay"
 fi
 
+# XIAO BLE: app-only build (no MCUboot, uses stock UF2 bootloader)
+if [[ "$BOARD" == "xiao_ble" ]]; then
+    NO_SYSBUILD="--no-sysbuild"
+fi
+
 west build \
     --board "${BOARD}" \
     --source-dir "${APP_DIR}" \
     --build-dir "${BUILD_DIR}" \
+    ${NO_SYSBUILD:-} \
     -- \
     $EXTRA_ARGS
 
 echo ""
 echo "=== Build successful ==="
-echo "Flash image: ${BUILD_DIR}/merged.hex"
-echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
 
-# Flash if requested (uses nrfutil to avoid PYTHONHOME conflicts with west flash)
+if [[ "$BOARD" == "xiao_ble" ]]; then
+    # XIAO BLE: app-only build — convert zephyr.hex to UF2 for drag-and-drop flash
+    UF2_SCRIPT="${SDK_DIR}/zephyr/scripts/build/uf2conv.py"
+    "${TOOLCHAIN}/usr/local/bin/python3" "${UF2_SCRIPT}" -c -f 0xada52840 \
+        -o "${BUILD_DIR}/zephyr/zephyr.uf2" "${BUILD_DIR}/zephyr/zephyr.hex"
+    echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
+    echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
+else
+    echo "Flash image: ${BUILD_DIR}/merged.hex"
+    echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
+fi
+
+# Flash if requested
 if [ "$DO_FLASH" = true ]; then
     echo ""
-    echo "[build.sh] Flashing ${BOARD}..."
-    # Use merged.hex which includes MCUboot + signed app
-    unset PYTHONHOME PYTHONPATH
-    nrfutil device program --firmware "${BUILD_DIR}/merged.hex"
-    echo "=== Flash complete ==="
+    if [[ "$BOARD" == "xiao_ble" ]]; then
+        echo "=== XIAO BLE: drag-and-drop flash ==="
+        echo "1. Double-tap RST to enter UF2 bootloader"
+        echo "2. Drag ${BUILD_DIR}/zephyr/zephyr.uf2 to the XIAO USB drive"
+    else
+        echo "[build.sh] Flashing ${BOARD}..."
+        # Use merged.hex which includes MCUboot + signed app
+        unset PYTHONHOME PYTHONPATH
+        nrfutil device program --firmware "${BUILD_DIR}/merged.hex"
+        echo "=== Flash complete ==="
+    fi
 fi
