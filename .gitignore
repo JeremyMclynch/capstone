@@ -16,3 +16,8 @@ server/uwb_measurements.db
 *.egg-info/
 .venv/
 __pycache__/
+
+# Temporary files
+scripts/tmp/
+plan.md
+*.pdf

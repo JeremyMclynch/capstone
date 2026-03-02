@@ -57,8 +57,8 @@ static dwt_txconfig_t txconfig = {
 };
 
 /* ── Antenna delays ──────────────────────────────────────────────── */
-#define TX_ANT_DLY 16385
-#define RX_ANT_DLY 16385
+#define OTP_CH5_ANTDELAY_ADDR 0x1A
+#define ANT_DLY_FALLBACK      16366  /* Qorvo characterized value for DWM3001CDK/DWM3000EVB */
 
 /* ── Timing constants ────────────────────────────────────────────── */
 #define POLL_RX_TO_RESP_TX_DLY_UUS  3500
@@ -78,6 +78,7 @@ static bool     uwb_started = false;       /* thread created? */
 static uint16_t ranging_interval_ms = 200;  /* overwritten from g_config */
 static uint32_t last_distance_mm;
 static uint32_t range_count;
+static uint16_t tx_ant_dly;                 /* resolved from OTP at init */
 
 /* ── Frame definitions ───────────────────────────────────────────── */
 #define ALL_MSG_COMMON_LEN        10
@@ -412,7 +413,7 @@ static void initiator_loop(void)
         dwt_setdelayedtrxtime(final_tx_time);
 
         uint64_t final_tx_ts =
-            (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+            (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + tx_ant_dly;
 
         final_msg_set_ts(&tx_final_msg[FINAL_MSG_POLL_TX_TS_IDX],  poll_tx_ts);
         final_msg_set_ts(&tx_final_msg[FINAL_MSG_RESP_RX_TS_IDX],  resp_rx_ts);
@@ -496,8 +497,21 @@ int uwb_manager_init(void)
     }
 
     dwt_configuretxrf(&txconfig);
-    dwt_setrxantennadelay(RX_ANT_DLY);
-    dwt_settxantennadelay(TX_ANT_DLY);
+
+    /* Read factory-calibrated antenna delay from OTP (Channel 5) */
+    uint32_t otp_ant_dly;
+    dwt_otpread(OTP_CH5_ANTDELAY_ADDR, &otp_ant_dly, 1);
+
+    tx_ant_dly = otp_ant_dly & 0xFFFF;
+    uint16_t rx_ant_dly = (otp_ant_dly >> 16) & 0xFFFF;
+
+    /* Fall back to characterized value if OTP is blank */
+    if (tx_ant_dly == 0) tx_ant_dly = ANT_DLY_FALLBACK;
+    if (rx_ant_dly == 0) rx_ant_dly = ANT_DLY_FALLBACK;
+
+    LOG_INF("Antenna delay: TX=%u RX=%u (OTP=0x%08X)", tx_ant_dly, rx_ant_dly, otp_ant_dly);
+    dwt_setrxantennadelay(rx_ant_dly);
+    dwt_settxantennadelay(tx_ant_dly);
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 

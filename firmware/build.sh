@@ -107,12 +107,27 @@ echo ""
 echo "=== Build successful ==="
 
 if [[ "$BOARD" == "xiao_ble" ]]; then
-    # XIAO BLE: app-only build — convert zephyr.hex to UF2 for drag-and-drop flash
+    # XIAO BLE: app-only build — convert zephyr.hex to UF2 and generate DFU package
     UF2_SCRIPT="${SDK_DIR}/zephyr/scripts/build/uf2conv.py"
     "${TOOLCHAIN}/usr/local/bin/python3" "${UF2_SCRIPT}" -c -f 0xada52840 \
         -o "${BUILD_DIR}/zephyr/zephyr.uf2" "${BUILD_DIR}/zephyr/zephyr.hex"
-    echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
-    echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
+
+    # Generate DFU package for serial flashing via adafruit-nrfutil
+    NRFUTIL_BIN="${HOME}/.local/bin/adafruit-nrfutil"
+    if [ -x "$NRFUTIL_BIN" ]; then
+        unset PYTHONHOME PYTHONPATH
+        "$NRFUTIL_BIN" dfu genpkg \
+            --dev-type 0x0052 \
+            --application "${BUILD_DIR}/zephyr/zephyr.hex" \
+            "${BUILD_DIR}/zephyr/dfu_package.zip" 2>/dev/null
+        echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
+        echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
+        echo "DFU package: ${BUILD_DIR}/zephyr/dfu_package.zip  (serial flash)"
+    else
+        echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
+        echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
+        echo "(install adafruit-nrfutil for serial DFU flashing)"
+    fi
 else
     echo "Flash image: ${BUILD_DIR}/merged.hex"
     echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
@@ -122,9 +137,31 @@ fi
 if [ "$DO_FLASH" = true ]; then
     echo ""
     if [[ "$BOARD" == "xiao_ble" ]]; then
-        echo "=== XIAO BLE: drag-and-drop flash ==="
-        echo "1. Double-tap RST to enter UF2 bootloader"
-        echo "2. Drag ${BUILD_DIR}/zephyr/zephyr.uf2 to the XIAO USB drive"
+        NRFUTIL_BIN="${HOME}/.local/bin/adafruit-nrfutil"
+        if [ ! -x "$NRFUTIL_BIN" ]; then
+            echo "ERROR: adafruit-nrfutil not found. Install with:"
+            echo "  python3 -m venv ~/.local/share/adafruit-nrfutil-venv"
+            echo "  ~/.local/share/adafruit-nrfutil-venv/bin/pip install adafruit-nrfutil"
+            echo "  ln -sf ~/.local/share/adafruit-nrfutil-venv/bin/adafruit-nrfutil ~/.local/bin/"
+            exit 1
+        fi
+
+        # Auto-detect XIAO serial port from nrfutil device list
+        unset PYTHONHOME PYTHONPATH
+        XIAO_PORT=$(nrfutil device list 2>/dev/null | grep -A2 "XIAO" | grep -oP '/dev/ttyACM\d+' | head -1)
+        if [[ -z "$XIAO_PORT" ]]; then
+            echo "ERROR: No XIAO device found. Double-tap RST to enter bootloader, then re-run."
+            exit 1
+        fi
+
+        echo "[build.sh] Flashing XIAO BLE via serial DFU on ${XIAO_PORT}..."
+        "$NRFUTIL_BIN" --verbose dfu serial \
+            --package "${BUILD_DIR}/zephyr/dfu_package.zip" \
+            --port "$XIAO_PORT" \
+            --baudrate 115200 \
+            --singlebank \
+            --touch 1200
+        echo "=== Flash complete ==="
     else
         echo "[build.sh] Flashing ${BOARD}..."
         # Use merged.hex which includes MCUboot + signed app
