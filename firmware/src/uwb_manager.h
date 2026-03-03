@@ -20,9 +20,19 @@
  *
  * Called from the UWB thread context. Implementations should be fast
  * (e.g., submit a k_work) and must not call blocking UWB APIs.
+ *
+ * @param anchor_id    Anchor UWB short address.
+ * @param tag_id       Tag UWB short address.
+ * @param distance_m   Calibrated distance in meters.
+ * @param rssi_q8      Channel RSSI in Q8.8 dBm (divide by 256 for dBm).
+ * @param fp_power_q8  First-path power in Q8.8 dBm.
+ * @param fp_index     First-path CIR index in Q10.6 (divide by 64).
+ * @param peak_index   Peak CIR sample index.
  */
 typedef void (*uwb_distance_cb_t)(uint16_t anchor_id, uint16_t tag_id,
-                                   float distance_m);
+                                   float distance_m,
+                                   int16_t rssi_q8, int16_t fp_power_q8,
+                                   uint16_t fp_index, uint16_t peak_index);
 
 /**
  * @brief Status snapshot returned by uwb_manager_get_status().

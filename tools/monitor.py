@@ -9,7 +9,7 @@ Usage:
     python3 monitor.py -d -s /dev/ttyACM1        # distance only, with serial
 
 Resources:
-  POST /distance  — from anchor, 12-byte distance measurement
+  POST /distance  — from anchor, 20-byte distance measurement (12-byte legacy supported)
   POST /event     — from tag,    6-byte UWB packet event
 
 Dependencies:
@@ -24,9 +24,10 @@ import time
 import aiocoap
 import aiocoap.resource as resource
 
-# /distance payload: anchor_id (u16), tag_id (u16), distance_mm (u32), uptime_s (u32)
-DIST_FMT  = struct.Struct("<HHII")
-DIST_SIZE = DIST_FMT.size  # 12 bytes
+# /distance payload (20 bytes): anchor_id(u16), tag_id(u16), distance_mm(u32),
+#   uptime_s(u32), rssi_q8(i16), fp_power_q8(i16), fp_index(u16), peak_index(u16)
+DIST_FMT_V2 = struct.Struct("<HHIIhhHH")  # 20 bytes
+DIST_FMT_V1 = struct.Struct("<HHII")       # 12 bytes (legacy)
 
 # /event payload: node_id (u16), event (u8), seq (u8), reserved (u16)
 EVT_FMT  = struct.Struct("<HBBxx")
@@ -43,6 +44,22 @@ _dist_count = 0
 _evt_count  = 0
 _t_last_dist: dict[tuple[int, int], float] = {}
 
+# ANSI colors for NLOS flags
+_YELLOW = "\033[33m"
+_RED    = "\033[31m"
+_RESET  = "\033[0m"
+
+
+def _nlos_flag(rssi_dbm, fp_dbm, fp_idx, peak_index):
+    """Return (level, flag) — 0=LOS, 1=likely NLOS, 2=high-confidence NLOS."""
+    multipath = (rssi_dbm - fp_dbm) > 6.0
+    path_diff = (peak_index - fp_idx) > 5.0
+    if multipath and path_diff:
+        return 2, f"  {_RED}[NLOS!]{_RESET}"
+    elif multipath or path_diff:
+        return 1, f"  {_YELLOW}[NLOS?]{_RESET}"
+    return 0, ""
+
 # Regex to match Zephyr log lines with ANSI escapes:
 # [00:00:01.234,000] <inf> uwb_manager: Distance: -0.123 m (tag=0x0100)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -57,11 +74,23 @@ class DistanceResource(resource.Resource):
         global _dist_count, _t_last_dist
 
         payload = request.payload
-        if len(payload) != DIST_SIZE:
+        if len(payload) == DIST_FMT_V2.size:
+            (anchor_id, tag_id, distance_mm, uptime_s,
+             rssi_q8, fp_power_q8, fp_index, peak_index) = DIST_FMT_V2.unpack(payload)
+            rssi_dbm = rssi_q8 / 256.0
+            fp_dbm = fp_power_q8 / 256.0
+            fp_idx = fp_index / 64.0  # Q10.6
+            diag = f"  rssi={rssi_dbm:.1f}dBm  fp={fp_dbm:.1f}dBm  fp_idx={fp_idx:.1f}  peak={peak_index}"
+            nlos_level, nlos_tag = _nlos_flag(rssi_dbm, fp_dbm, fp_idx, peak_index)
+            diag += nlos_tag
+        elif len(payload) == DIST_FMT_V1.size:
+            anchor_id, tag_id, distance_mm, uptime_s = DIST_FMT_V1.unpack(payload)
+            diag = ""
+            nlos_level = 0
+        else:
             print(f"[WARN] /distance bad size {len(payload)}B")
             return aiocoap.Message(code=aiocoap.CHANGED)
 
-        anchor_id, tag_id, distance_mm, uptime_s = DIST_FMT.unpack(payload)
         distance_m = distance_mm / 1000.0
 
         now  = time.monotonic()
@@ -72,11 +101,17 @@ class DistanceResource(resource.Resource):
         _dist_count += 1
 
         src = request.remote.hostinfo if request.remote else "?"
-        print(
+        line = (
             f"[DIST {_dist_count:>4}]  anchor=0x{anchor_id:04X}  tag=0x{tag_id:04X}"
             f"  dist={distance_m:7.3f} m  uptime={uptime_s:6d}s"
-            f"  from={src}{rate}"
+            f"  from={src}{rate}{diag}"
         )
+        if nlos_level == 2:
+            print(f"{_RED}{line}{_RESET}")
+        elif nlos_level == 1:
+            print(f"{_YELLOW}{line}{_RESET}")
+        else:
+            print(line)
         return aiocoap.Message(code=aiocoap.CHANGED)
 
 

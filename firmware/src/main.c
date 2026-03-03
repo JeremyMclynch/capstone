@@ -32,14 +32,17 @@ extern int uci_coap_init(void);
 
 /* ── Distance callback (called from UWB thread) ─────────────────── */
 static void on_distance_measured(uint16_t anchor_id, uint16_t tag_id,
-                                  float distance_m)
+                                  float distance_m,
+                                  int16_t rssi_q8, int16_t fp_power_q8,
+                                  uint16_t fp_index, uint16_t peak_index)
 {
     dk_set_led(LED_RANGING, 1);
     k_msleep(20);
     dk_set_led(LED_RANGING, 0);
 
     if (g_config.role == ROLE_ANCHOR) {
-        thread_coap_send_distance(anchor_id, tag_id, distance_m);
+        thread_coap_send_distance(anchor_id, tag_id, distance_m,
+                                  rssi_q8, fp_power_q8, fp_index, peak_index);
     }
 }
 

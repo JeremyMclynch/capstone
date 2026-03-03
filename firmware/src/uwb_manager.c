@@ -329,10 +329,20 @@ static void responder_loop(void)
 
         range_count++;
 
-        LOG_INF("Distance: %.3f m (tag=0x%04X)", (double)calibrated_dist, tag_addr);
+        /* Read per-packet signal quality diagnostics from FINAL RX */
+        dwt_cirdiags_t cir_diag;
+        int16_t rssi_q8 = 0, fp_power_q8 = 0;
+        dwt_readdiagnostics_acc(&cir_diag, DWT_ACC_IDX_IP_M);
+        dwt_calculate_rssi(&cir_diag, DWT_ACC_IDX_IP_M, &rssi_q8);
+        dwt_calculate_first_path_power(&cir_diag, DWT_ACC_IDX_IP_M, &fp_power_q8);
+
+        LOG_INF("Distance: %.3f m (tag=0x%04X) rssi=%.1f fp=%.1f",
+                (double)calibrated_dist, tag_addr,
+                (double)rssi_q8 / 256.0, (double)fp_power_q8 / 256.0);
 
         if (distance_cb)
-            distance_cb(g_config.uwb_addr, tag_addr, calibrated_dist);
+            distance_cb(g_config.uwb_addr, tag_addr, calibrated_dist,
+                        rssi_q8, fp_power_q8, cir_diag.FpIndex, cir_diag.peakIndex);
     }
 }
 
@@ -514,6 +524,7 @@ int uwb_manager_init(void)
     }
 
     dwt_configuretxrf(&txconfig);
+    dwt_configciadiag(DW_CIA_DIAG_LOG_ALL);
 
     /* Read factory-calibrated antenna delay from OTP (Channel 5) */
     uint32_t otp_ant_dly;

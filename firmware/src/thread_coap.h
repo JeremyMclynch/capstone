@@ -17,12 +17,18 @@ int thread_coap_init(void);
 /**
  * @brief Enqueue a distance measurement for CoAP transmission.
  *
- * @param anchor_id   16-bit UWB short address of the anchor.
- * @param tag_id      16-bit UWB short address of the tag.
- * @param distance_m  Measured distance in meters.
+ * @param anchor_id    16-bit UWB short address of the anchor.
+ * @param tag_id       16-bit UWB short address of the tag.
+ * @param distance_m   Measured distance in meters.
+ * @param rssi_q8      Channel RSSI in Q8.8 dBm.
+ * @param fp_power_q8  First-path power in Q8.8 dBm.
+ * @param fp_index     First-path CIR index (Q10.6).
+ * @param peak_index   Peak CIR sample index.
  */
 void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
-                                float distance_m);
+                                float distance_m,
+                                int16_t rssi_q8, int16_t fp_power_q8,
+                                uint16_t fp_index, uint16_t peak_index);
 
 /**
  * @brief Send a UWB event notification over CoAP (POST /event).

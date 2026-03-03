@@ -410,7 +410,7 @@ uwb_manager: initiator_loop()
 
 ### Payload Formats
 
-**POST /distance** — 12 bytes, little-endian:
+**POST /distance** — 20 bytes, little-endian (12-byte legacy also accepted by server):
 
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
@@ -418,6 +418,10 @@ uwb_manager: initiator_loop()
 | 2 | 2 | `tag_id` | Tag UWB short address |
 | 4 | 4 | `distance_mm` | Distance in millimeters |
 | 8 | 4 | `uptime_s` | Seconds since boot |
+| 12 | 2 | `rssi_q8` | Channel RSSI in Q8.8 dBm (int16, divide by 256) |
+| 14 | 2 | `fp_power_q8` | First-path power in Q8.8 dBm (int16, divide by 256) |
+| 16 | 2 | `fp_index` | First-path CIR index, Q10.6 (uint16, divide by 64) |
+| 18 | 2 | `peak_index` | Peak CIR sample index (uint16) |
 
 **POST /event** — 6 bytes, little-endian:
 
@@ -427,6 +431,43 @@ uwb_manager: initiator_loop()
 | 2 | 1 | `event` | `0x01`=POLL_TX, `0x02`=RESP_RX, `0x03`=FINAL_TX, `0x10`=NO_RESP |
 | 3 | 1 | `seq` | Frame sequence number |
 | 4 | 2 | `reserved` | Zero |
+
+### Signal Quality Diagnostics
+
+The four diagnostic fields in the `/distance` payload are read from the DW3000's CIA (Channel Impulse Analysis) engine after each FINAL frame reception. They enable the server to assess measurement reliability and detect non-line-of-sight (NLOS) conditions.
+
+#### RSSI (Received Signal Strength Indicator)
+
+Total received channel power in dBm. Computed from the CIR (Channel Impulse Response) energy estimate using `dwt_calculate_rssi()`. Includes energy from all multipath components — the direct path plus any reflections.
+
+Transmitted as Q8.8 fixed-point int16: divide by 256 to get dBm. Typical indoor UWB values range from -75 dBm (close range, clear LOS) to -95 dBm (far range or obstructed). More negative = weaker signal.
+
+Useful for: link budget monitoring, coarse range estimation, environment characterization.
+
+#### First Path Power
+
+Signal power of only the direct (first-arriving) path component, in dBm (Q8.8 int16). The DW3000 identifies the first path arrival in the CIR and computes power from three amplitude samples (F1, F2, F3) around it using `dwt_calculate_first_path_power()`.
+
+Always less than or equal to RSSI since it excludes multipath energy. When `RSSI - First Path Power > 6 dB`, significant multipath exists — the signal is arriving via reflections as well as the direct path. This is a strong indicator of NLOS or cluttered environments, and the distance measurement may be biased.
+
+#### First Path Index
+
+CIR sample index where the direct path was detected, in Q10.6 fixed-point (uint16, divide by 64 for the sample number). Read from `dwt_cirdiags_t.FpIndex`. Represents the arrival time of the earliest signal component, determined by the DW3000's leading-edge detection algorithm on the CIR.
+
+Useful for: comparing with peak index to detect NLOS conditions.
+
+#### Peak Path Index
+
+CIR sample index of the strongest signal component (uint16, integer). Read from `dwt_cirdiags_t.peakIndex`.
+
+In line-of-sight (LOS) conditions, the strongest path is the direct path, so `peak_index ≈ fp_index / 64`. In NLOS conditions, the direct path is attenuated by an obstruction while a reflected path (arriving later) is stronger, causing `peak_index > fp_index / 64`.
+
+#### NLOS Detection Rules of Thumb
+
+1. **`RSSI - FP Power > 6 dB`** — likely NLOS (multipath dominant over direct path)
+2. **`Peak Index - FP Index/64 > 5 samples`** — likely NLOS (direct path attenuated, reflection stronger)
+3. **Both conditions together** — high confidence NLOS
+4. Distance measurements during NLOS are **biased long** (the reflected path is longer than the true direct-path distance)
 
 ---
 
@@ -710,7 +751,7 @@ Devices POST binary payloads to the server. Your CoAP server must listen on port
 
 #### `POST /distance` — Distance Measurements (sent by anchors)
 
-12-byte binary payload, little-endian:
+20-byte binary payload, little-endian (12-byte legacy format also accepted for backwards compatibility):
 
 ```
 Offset  Size  Type      Field         Description
@@ -719,23 +760,42 @@ Offset  Size  Type      Field         Description
 2       2     uint16    tag_id        Tag UWB short address (e.g. 0x0100)
 4       4     uint32    distance_mm   Measured distance in millimeters
 8       4     uint32    uptime_s      Seconds since anchor booted
+12      2     int16     rssi_q8       Channel RSSI, Q8.8 dBm (divide by 256)
+14      2     int16     fp_power_q8   First-path power, Q8.8 dBm (divide by 256)
+16      2     uint16    fp_index      First-path CIR index, Q10.6 (divide by 64)
+18      2     uint16    peak_index    Peak CIR sample index
 ```
 
-Python parsing:
+Python parsing (backwards-compatible):
 
 ```python
 import struct
 
-DIST_FMT = struct.Struct("<HHII")  # 12 bytes
+DIST_V2 = struct.Struct("<HHIIhhHH")  # 20 bytes
+DIST_V1 = struct.Struct("<HHII")       # 12 bytes (legacy)
 
 def parse_distance(payload: bytes) -> dict:
-    anchor_id, tag_id, distance_mm, uptime_s = DIST_FMT.unpack(payload)
-    return {
-        "anchor_id": anchor_id,
-        "tag_id": tag_id,
-        "distance_m": distance_mm / 1000.0,
-        "uptime_s": uptime_s,
-    }
+    if len(payload) == DIST_V2.size:
+        (anchor_id, tag_id, distance_mm, uptime_s,
+         rssi_q8, fp_power_q8, fp_idx, peak_idx) = DIST_V2.unpack(payload)
+        return {
+            "anchor_id": anchor_id,
+            "tag_id": tag_id,
+            "distance_m": distance_mm / 1000.0,
+            "uptime_s": uptime_s,
+            "rssi_dbm": rssi_q8 / 256.0,
+            "fp_power_dbm": fp_power_q8 / 256.0,
+            "fp_index": fp_idx / 64.0,
+            "peak_index": peak_idx,
+        }
+    elif len(payload) == DIST_V1.size:
+        anchor_id, tag_id, distance_mm, uptime_s = DIST_V1.unpack(payload)
+        return {
+            "anchor_id": anchor_id,
+            "tag_id": tag_id,
+            "distance_m": distance_mm / 1000.0,
+            "uptime_s": uptime_s,
+        }
 ```
 
 Rate: one POST per ranging cycle (default interval: 1000 ms, configurable 50–10000 ms). Only sent when ranging is active and Thread is connected.
@@ -784,7 +844,7 @@ import aiocoap.resource as resource
 
 class DistanceResource(resource.Resource):
     async def render_post(self, request):
-        if len(request.payload) == 12:
+        if len(request.payload) in (DIST_V2.size, DIST_V1.size):
             data = parse_distance(request.payload)
             sender = request.remote.hostinfo  # device IPv6 address
             # ... store data ...

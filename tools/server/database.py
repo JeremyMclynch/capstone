@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS measurements (
     distance_mm REAL    NOT NULL,
     distance_m  REAL    GENERATED ALWAYS AS (distance_mm / 1000.0) VIRTUAL,
     node_uptime_s INTEGER,
+    rssi_dbm    REAL,
+    fp_power_dbm REAL,
+    fp_index    REAL,
+    peak_index  INTEGER,
     received_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -33,6 +37,10 @@ CREATE VIEW IF NOT EXISTS latest_distances AS
         anchor_id,
         tag_id,
         distance_m,
+        rssi_dbm,
+        fp_power_dbm,
+        fp_index,
+        peak_index,
         received_at
     FROM measurements m1
     WHERE received_at = (
@@ -65,6 +73,10 @@ def insert_measurement(
     tag_id: int,
     distance_mm: float,
     node_uptime_s: Optional[int] = None,
+    rssi_dbm: Optional[float] = None,
+    fp_power_dbm: Optional[float] = None,
+    fp_index: Optional[float] = None,
+    peak_index: Optional[int] = None,
 ) -> int:
     """
     Insert a distance measurement record.
@@ -74,10 +86,12 @@ def insert_measurement(
     with get_connection() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO measurements (anchor_id, tag_id, distance_mm, node_uptime_s)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO measurements (anchor_id, tag_id, distance_mm, node_uptime_s,
+                                      rssi_dbm, fp_power_dbm, fp_index, peak_index)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (anchor_id, tag_id, distance_mm, node_uptime_s),
+            (anchor_id, tag_id, distance_mm, node_uptime_s,
+             rssi_dbm, fp_power_dbm, fp_index, peak_index),
         )
         return cursor.lastrowid
 
@@ -87,7 +101,9 @@ def get_recent_measurements(limit: int = 100):
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT anchor_id, tag_id, distance_m, received_at
+            SELECT anchor_id, tag_id, distance_m,
+                   rssi_dbm, fp_power_dbm, fp_index, peak_index,
+                   received_at
             FROM measurements
             ORDER BY received_at DESC
             LIMIT ?
@@ -101,6 +117,9 @@ def get_latest_per_pair():
     """Return the most recent measurement for each anchor-tag pair."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT anchor_id, tag_id, distance_m, received_at FROM latest_distances"
+            """SELECT anchor_id, tag_id, distance_m,
+                      rssi_dbm, fp_power_dbm, fp_index, peak_index,
+                      received_at
+               FROM latest_distances"""
         ).fetchall()
     return [dict(r) for r in rows]

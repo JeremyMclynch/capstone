@@ -48,6 +48,10 @@ struct distance_measurement {
     uint16_t anchor_id;
     uint16_t tag_id;
     float    distance_m;
+    int16_t  rssi_q8;
+    int16_t  fp_power_q8;
+    uint16_t fp_index;
+    uint16_t peak_index;
 };
 
 #define MEAS_QUEUE_DEPTH 8
@@ -76,6 +80,10 @@ struct __packed distance_payload {
     uint16_t tag_id;
     uint32_t distance_mm;
     uint32_t uptime_s;
+    int16_t  rssi_q8;
+    int16_t  fp_power_q8;
+    uint16_t fp_index;
+    uint16_t peak_index;
 };
 
 /* Event payload (6 bytes, little-endian):
@@ -105,6 +113,10 @@ static void coap_send_work_handler(struct k_work *work)
             .tag_id      = meas.tag_id,
             .distance_mm = (uint32_t)(meas.distance_m * 1000.0f),
             .uptime_s    = (uint32_t)(k_uptime_get() / 1000),
+            .rssi_q8     = meas.rssi_q8,
+            .fp_power_q8 = meas.fp_power_q8,
+            .fp_index    = meas.fp_index,
+            .peak_index  = meas.peak_index,
         };
 
         int ret = coap_send_request(COAP_METHOD_POST,
@@ -249,16 +261,22 @@ void thread_coap_send_event(uint16_t node_id, uint8_t event, uint8_t seq)
 }
 
 void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
-                                float distance_m)
+                                float distance_m,
+                                int16_t rssi_q8, int16_t fp_power_q8,
+                                uint16_t fp_index, uint16_t peak_index)
 {
     if (!thread_connected) {
         return;
     }
 
     struct distance_measurement meas = {
-        .anchor_id  = anchor_id,
-        .tag_id     = tag_id,
-        .distance_m = distance_m,
+        .anchor_id   = anchor_id,
+        .tag_id      = tag_id,
+        .distance_m  = distance_m,
+        .rssi_q8     = rssi_q8,
+        .fp_power_q8 = fp_power_q8,
+        .fp_index    = fp_index,
+        .peak_index  = peak_index,
     };
 
     /* Drop oldest if queue is full (non-blocking put) */
