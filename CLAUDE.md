@@ -64,6 +64,12 @@ Use `nrfutil device list` to identify serial port assignments (they can change b
 | DWM3001CDK | Tag (DS-TWR initiator) | 760206311 | /dev/ttyACM3 |
 | nRF52840 USB Dongle | Thread RCP | — | /dev/ttyACM0 |
 
+**Remote reset via J-Link** (no physical button press needed):
+```bash
+nrfutil device reset --serial-number 1050222631   # reset anchor (DK)
+nrfutil device reset --serial-number 760206311    # reset tag (CDK)
+```
+
 ### XIAO BLE
 
 Board target: `xiao_ble`. App-only build (no MCUboot, uses `--no-sysbuild`). Default address 0x0200. Flash via UF2 drag-and-drop: double-tap RST, drag `zephyr.uf2` to the USB drive. DK library works for LEDs (3 RGB LEDs, no buttons). Board conf disables MCUmgr/IMG_MANAGER/RETENTION_BOOT_MODE.
@@ -149,3 +155,32 @@ Shared firmware source builds for all boards; board-specific config in `firmware
 ## Thread Network
 
 Channel 15, PAN ID 0xABCD (43981), network key `00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff`. All devices and `tools/scripts/thread_dongle_setup.sh` must match.
+
+## Testing
+
+Automated integration test suite that exercises all UCI commands over live hardware:
+
+```bash
+# Full suite (devices must be powered on, Thread network active)
+python3 tools/scripts/test_firmware.py -v
+
+# Quick smoke test (non-destructive, ~30s)
+python3 tools/scripts/test_firmware.py -v -k TestInfo
+
+# Discover devices only (verify Thread connectivity)
+python3 tools/scripts/test_firmware.py --discover
+
+# Run via UART instead of CoAP
+python3 tools/scripts/test_firmware.py --transport uart -v
+
+# Explicit device addresses (skip auto-discovery)
+python3 tools/scripts/test_firmware.py --anchor-ip <ipv6> --tag-ip <ipv6> -v
+```
+
+**Run this test suite after architecture changes or firmware refactors** to verify nothing is broken. Destructive tests (TestConfigPersistence, TestRoleSwap) factory-reset devices in tearDown.
+
+**Add new tests** when new UCI commands or testable features are developed, or when edge cases are discovered during debugging.
+
+## Meta: Maintaining This File
+
+When you discover useful commands for controlling, debugging, or interacting with the hardware (e.g. `nrfutil device reset`, J-Link tricks, Thread CLI commands, CoAP queries), add them to the appropriate section of this file so they're available in future sessions.

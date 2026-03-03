@@ -88,29 +88,67 @@ west flash --build-dir firmware/build/decawave_dwm3001cdk --dev-id 760206311    
 
 XIAO BLE uses UF2 drag-and-drop: double-tap RST, drag `firmware/build/xiao_ble/zephyr/zephyr.uf2` to the USB drive.
 
-## Running the System
+## Running the System (After Reboot)
 
-### 1. Start Thread network on the Linux host
+Everything below assumes the firmware is already flashed and Python dependencies are installed. This is what you need to do each time you reboot or log back in.
+
+### 1. Verify hardware is connected
+
+Plug in the USB dongle and both dev boards, then confirm they're enumerated:
+
+```bash
+nrfutil device list
+```
+
+You should see 3 devices: the nRF USB Dongle (OpenThread RCP), the nRF52840 DK (anchor), and the DWM3001CDK (tag). Note the serial port assignments — **they can change between reboots**. Check the `Ports` field for each device and compare with the table in the Hardware section below.
+
+### 2. Start the Thread network on the host
 
 ```bash
 sudo bash tools/scripts/thread_dongle_setup.sh
 ```
 
-This configures `ot-daemon` with the matching Thread credentials and starts the host as Thread Leader.
+This starts `ot-daemon` on the USB dongle, configures the Thread dataset, and joins the mesh as Leader. The `ot-daemon` process does **not** persist across reboots — you must re-run this script each time.
 
-### 2. Monitor distance measurements
+The script will print the `wpan0` IPv6 addresses and Thread state when done.
+
+### 3. Wait for devices to join the mesh
+
+The firmware on both boards auto-starts ranging on boot — no manual action needed on the boards themselves. After the host Thread network is up, the boards join within ~10-15 seconds.
+
+Verify they've joined by pinging the Thread multicast address:
 
 ```bash
-# Live console output (distance + tag events)
-python3 tools/monitor.py
+ping6 -c3 -I wpan0 ff03::1
+```
 
-# Full CoAP server with SQLite storage
+You should see responses from 2 devices (anchor + tag). If no responses appear after 15 seconds, check that:
+- Both boards are powered (LEDs active)
+- The USB dongle port in `thread_dongle_setup.sh` matches `nrfutil device list` output
+- Try resetting the boards: `nrfutil device reset --serial-number <S/N>`
+
+### 4. Run the monitor
+
+```bash
+python3 tools/monitor.py
+```
+
+You should see `[DIST ...]` lines arriving within a few seconds — one per ranging cycle. Each line shows the anchor/tag IDs, measured distance, and update rate.
+
+For persistent storage instead of console output:
+
+```bash
 cd tools/server && python3 main.py
 ```
 
-### 3. Verify
+### 5. (Optional) Verify devices via UCI over CoAP
 
-After ~10 seconds the firmware devices join the Thread mesh. The anchor starts ranging with the tag and sends distance measurements via CoAP multicast. The monitor/server logs each arriving measurement.
+Use the IPv6 addresses from the `ping6` output to query devices remotely:
+
+```bash
+python3 tools/scripts/uwb_tool.py coap://[<device-ipv6>] info
+python3 tools/scripts/uwb_tool.py coap://[<device-ipv6>] status
+```
 
 ## Hardware
 
