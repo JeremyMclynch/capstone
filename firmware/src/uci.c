@@ -271,6 +271,16 @@ static void handle_enter_bootloader(const struct uci_request *req,
 #endif
 }
 
+static void handle_reboot(const struct uci_request *req,
+                          struct uci_response *rsp)
+{
+    rsp_ok(rsp, req->cmd);
+
+    LOG_INF("Reboot requested via UCI");
+    k_sleep(K_MSEC(100));
+    sys_reboot(SYS_REBOOT_COLD);
+}
+
 /* ── Dispatcher ───────────────────────────────────────────────────── */
 
 void uci_process(const struct uci_request *req, struct uci_response *rsp)
@@ -287,6 +297,7 @@ void uci_process(const struct uci_request *req, struct uci_response *rsp)
     case UCI_CMD_SAVE_CONFIG:   handle_save_config(req, rsp);    break;
     case UCI_CMD_FACTORY_RESET: handle_factory_reset(req, rsp);  break;
     case UCI_CMD_ENTER_BOOTLOADER: handle_enter_bootloader(req, rsp); break;
+    case UCI_CMD_REBOOT:        handle_reboot(req, rsp);             break;
     default:
         LOG_WRN("Unknown UCI cmd 0x%02X", req->cmd);
         rsp_err(rsp, req->cmd, UCI_STATUS_ERR_UNKNOWN_CMD);

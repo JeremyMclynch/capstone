@@ -28,6 +28,7 @@
 #define UCI_CMD_SAVE_CONFIG     0x20
 #define UCI_CMD_FACTORY_RESET   0x21
 #define UCI_CMD_ENTER_BOOTLOADER 0x22
+#define UCI_CMD_REBOOT          0x23
 
 /* ── Status codes ────────────────────────────────────────────────── */
 

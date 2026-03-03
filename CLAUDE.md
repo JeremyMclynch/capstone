@@ -84,6 +84,7 @@ python3 tools/scripts/uwb_tool.py /dev/ttyACM1 stop
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 start
 python3 tools/scripts/uwb_tool.py /dev/ttyACM3 set-interval 500
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 save          # persist to NVS flash
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 reboot        # reboot device
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 factory-reset
 ```
 
@@ -100,6 +101,11 @@ python3 tools/monitor.py
 
 # Full CoAP server with SQLite storage
 cd tools/server && python3 main.py
+
+# All-in-one dashboard (monitor + device discovery + UCI commands)
+python3 tools/dashboard.py
+python3 tools/dashboard.py --no-monitor       # if monitor.py already running separately
+python3 tools/dashboard.py --iface wpan0      # explicit Thread interface
 ```
 
 ## OTA Firmware Updates

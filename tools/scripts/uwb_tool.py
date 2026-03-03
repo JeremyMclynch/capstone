@@ -21,6 +21,7 @@ Commands:
     stop                        Stop ranging
     save                        Save config to flash (persists across reboots)
     factory-reset               Erase config and reboot with defaults
+    reboot                      Reboot the device
     enter-bootloader            Reboot into MCUboot serial recovery mode
 
 Examples:
@@ -51,6 +52,7 @@ CMD_GET_STATUS    = 0x12
 CMD_SAVE_CONFIG   = 0x20
 CMD_FACTORY_RESET = 0x21
 CMD_ENTER_BOOTLOADER = 0x22
+CMD_REBOOT           = 0x23
 
 STATUS_NAMES = {
     0x00: "OK",
@@ -151,6 +153,10 @@ class UWBDeviceBase:
 
     def enter_bootloader(self) -> str:
         status, _ = self._send_request(CMD_ENTER_BOOTLOADER)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def reboot(self) -> str:
+        status, _ = self._send_request(CMD_REBOOT)
         return STATUS_NAMES.get(status, f"0x{status:02X}")
 
 
@@ -280,6 +286,12 @@ class UWBDeviceCoAP(UWBDeviceBase):
         except Exception:
             return "OK (device entering bootloader)"
 
+    def reboot(self) -> str:
+        try:
+            return super().reboot()
+        except Exception:
+            return "OK (device rebooting)"
+
 
 # ── CLI entry point ─────────────────────────────────────────────────
 
@@ -370,6 +382,10 @@ def main():
                 print("  Device is now in MCUboot serial recovery mode.")
                 print("  Upload firmware:")
                 print("    mcumgr --conntype serial --connstring dev=<port>,baud=115200 image upload <file>")
+
+        elif cmd == "reboot":
+            result = dev.reboot()
+            print(f"  reboot: {result}")
 
         else:
             print(f"Unknown command: {cmd}")

@@ -141,7 +141,17 @@ For persistent storage instead of console output:
 cd tools/server && python3 main.py
 ```
 
-### 5. (Optional) Verify devices via UCI over CoAP
+### 5. (Alternative) All-in-one dashboard
+
+Instead of running `monitor.py` and `uwb_tool.py` in separate terminals, use the curses-based dashboard that combines monitoring, device discovery, and UCI commands in one screen:
+
+```bash
+python3 tools/dashboard.py
+```
+
+Use arrow keys to navigate commands, Enter to execute, and `q` to quit. Devices are auto-discovered via Thread multicast.
+
+### 6. (Optional) Verify devices via UCI over CoAP
 
 Use the IPv6 addresses from the `ping6` output to query devices remotely:
 
@@ -232,6 +242,7 @@ uwb-workspace/                  # West workspace root
 │   │
 │   └── tools/
 │       ├── monitor.py          # Live CoAP distance/event monitor
+│       ├── dashboard.py        # Curses TUI (monitor + discovery + commands)
 │       ├── setup_host_tools.sh # Build OpenThread + install mcumgr
 │       ├── scripts/
 │       │   ├── uwb_tool.py         # UCI command-line tool
