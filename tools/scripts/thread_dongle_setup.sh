@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 # thread_dongle_setup.sh — Start ot-daemon and join the capstone Thread network
 #
-# Usage:  ./scripts/thread_dongle_setup.sh
+# Usage:  sudo bash tools/scripts/thread_dongle_setup.sh
 # Requires: sudo (for ot-daemon, ip commands)
 
 set -euo pipefail
 
-OT_DIR="/home/jeremy/Projects/openthread/src/openthread"
-OT_DAEMON="$OT_DIR/build/posix/src/posix/ot-daemon"
-OT_CTL="$OT_DIR/build/posix/src/posix/ot-ctl"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Look for ot-daemon/ot-ctl: project tools first, then legacy path
+if [[ -x "${PROJECT_ROOT}/tools/openthread/ot-daemon" ]]; then
+    OT_DAEMON="${PROJECT_ROOT}/tools/openthread/ot-daemon"
+    OT_CTL="${PROJECT_ROOT}/tools/openthread/ot-ctl"
+elif [[ -x "/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-daemon" ]]; then
+    # Legacy fallback
+    OT_DAEMON="/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-daemon"
+    OT_CTL="/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-ctl"
+else
+    echo "ERROR: ot-daemon not found. Run: bash tools/setup_host_tools.sh" >&2
+    exit 1
+fi
 SPINEL_URI="spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=460800"
 OT_LOG="/tmp/ot-daemon.log"
 
@@ -134,11 +146,11 @@ echo "  sudo ot-ctl neighbor table"
 echo "  ping6 -c3 -I wpan0 ff03::1"
 echo ""
 echo "Remote UCI commands (replace <addr> with device mesh address):"
-echo "  python3 scripts/uwb_tool.py coap://[<addr>] info"
-echo "  python3 scripts/uwb_tool.py coap://[<addr>] status"
+echo "  python3 tools/scripts/uwb_tool.py coap://[<addr>] info"
+echo "  python3 tools/scripts/uwb_tool.py coap://[<addr>] status"
 echo ""
 echo "To monitor live distance data from the anchor:"
-echo "  python3 monitor.py"
+echo "  python3 tools/monitor.py"
 echo ""
 echo "To run the full server (CoAP + SQLite):"
-echo "  cd server && python3 main.py"
+echo "  cd tools/server && python3 main.py"

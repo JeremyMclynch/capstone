@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 3.20.0)
 
-# Add the local DW3000 Zephyr driver module before find_package(Zephyr)
-list(APPEND ZEPHYR_EXTRA_MODULES
-    ${CMAKE_CURRENT_SOURCE_DIR}/../zephyr-dw3000-decadriver
-)
+# DW3000 driver module discovery:
+#   - West workspace: auto-discovered from west.yml (WEST_TOPDIR is set)
+#   - Fallback: build.sh passes -DZEPHYR_EXTRA_MODULES, or detect sibling dir
+if(NOT DEFINED ZEPHYR_EXTRA_MODULES AND NOT DEFINED WEST_TOPDIR)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../zephyr-dw3000-decadriver/zephyr/module.yml")
+        list(APPEND ZEPHYR_EXTRA_MODULES
+            ${CMAKE_CURRENT_SOURCE_DIR}/../zephyr-dw3000-decadriver
+        )
+    endif()
+endif()
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 

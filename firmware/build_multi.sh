@@ -8,8 +8,21 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SDK_DIR="${HOME}/ncs/v3.2.2"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOOLCHAIN="${HOME}/ncs/toolchains/927563c840"
+
+# Detect west workspace
+USE_WORKSPACE=false
+if [ -d "${PROJECT_ROOT}/.west" ] && [ -f "${PROJECT_ROOT}/west.yml" ]; then
+    USE_WORKSPACE=true
+fi
+
+if [ "$USE_WORKSPACE" = true ]; then
+    WEST_DIR="${PROJECT_ROOT}"
+else
+    SDK_DIR="${HOME}/ncs/v3.2.2"
+    WEST_DIR="${SDK_DIR}"
+fi
 
 export PATH="${TOOLCHAIN}/bin:${TOOLCHAIN}/usr/bin:${TOOLCHAIN}/usr/local/bin:${TOOLCHAIN}/opt/bin:${TOOLCHAIN}/opt/zephyr-sdk/arm-zephyr-eabi/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="${TOOLCHAIN}/lib:${TOOLCHAIN}/lib/x86_64-linux-gnu:${TOOLCHAIN}/usr/local/lib"
@@ -17,6 +30,11 @@ export PYTHONHOME="${TOOLCHAIN}/usr/local"
 export PYTHONPATH="${TOOLCHAIN}/usr/local/lib/python3.12:${TOOLCHAIN}/usr/local/lib/python3.12/site-packages"
 export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
 export ZEPHYR_SDK_INSTALL_DIR="${TOOLCHAIN}/opt/zephyr-sdk"
+
+EXTRA_MODULE_ARGS=""
+if [ "$USE_WORKSPACE" = false ]; then
+    EXTRA_MODULE_ARGS="-DZEPHYR_EXTRA_MODULES=${PROJECT_ROOT}/zephyr-dw3000-decadriver"
+fi
 
 build_node() {
     local BOARD="$1"
@@ -29,13 +47,13 @@ build_node() {
     echo ""
     echo "--- Building ${BUILD_TAG}: board=${BOARD} role=${ROLE} addr=${ADDR} ---"
 
-    cd "${SDK_DIR}"
+    cd "${WEST_DIR}"
     west build \
         --board "${BOARD}" \
         --source-dir "${SCRIPT_DIR}" \
         --build-dir "${BUILD_DIR}" \
         -- \
-        -DZEPHYR_EXTRA_MODULES="${SCRIPT_DIR}/../zephyr-dw3000-decadriver" \
+        ${EXTRA_MODULE_ARGS} \
         -DCONFIG_NODE_ROLE_${ROLE}=y \
         -DCONFIG_UWB_NODE_SHORT_ADDR="${ADDR}"
 

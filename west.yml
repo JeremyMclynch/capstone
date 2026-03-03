@@ -1,0 +1,23 @@
+manifest:
+  version: "0.13"
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+    - name: dw3000
+      url-base: https://github.com/br101
+
+  projects:
+    - name: nrf
+      repo-path: sdk-nrf
+      remote: ncs
+      revision: v3.2.2
+      import: true
+
+    - name: zephyr-dw3000-decadriver
+      remote: dw3000
+      revision: 717751e248d5becf79838910c404b0193e8f88cc
+      path: zephyr-dw3000-decadriver
+
+  self:
+    path: .

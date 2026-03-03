@@ -26,13 +26,18 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# nRF Connect SDK installed by nrfutil (preferred over capstone/v3.2.2 copy)
-SDK_DIR="${HOME}/ncs/v3.2.2"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TOOLCHAIN="${HOME}/ncs/toolchains/927563c840"
 APP_DIR="${SCRIPT_DIR}"
 BOARD="${1:-nrf52840dk/nrf52840}"
 DO_FLASH=false
 DO_CLEAN=false
+
+# Detect west workspace (west init -l . creates .west/)
+USE_WORKSPACE=false
+if [ -d "${PROJECT_ROOT}/.west" ] && [ -f "${PROJECT_ROOT}/west.yml" ]; then
+    USE_WORKSPACE=true
+fi
 
 # Parse flags
 for arg in "$@"; do
@@ -54,10 +59,18 @@ export ZEPHYR_SDK_INSTALL_DIR="${TOOLCHAIN}/opt/zephyr-sdk"
 BUILD_SUBDIR="${BOARD//\//-}"
 BUILD_DIR="${APP_DIR}/build/${BUILD_SUBDIR}"
 
-# Validate SDK exists
-if [ ! -d "${SDK_DIR}" ]; then
-    echo "ERROR: nRF Connect SDK not found at ${SDK_DIR}"
-    exit 1
+# Resolve west workspace or fallback SDK
+if [ "$USE_WORKSPACE" = true ]; then
+    WEST_DIR="${PROJECT_ROOT}"
+else
+    SDK_DIR="${HOME}/ncs/v3.2.2"
+    WEST_DIR="${SDK_DIR}"
+    if [ ! -d "${SDK_DIR}" ]; then
+        echo "ERROR: nRF Connect SDK not found at ${SDK_DIR}"
+        echo "Either run 'west init -l . && west update' in the project root,"
+        echo "or install the SDK via nrfutil."
+        exit 1
+    fi
 fi
 
 # Check nrfutil
@@ -68,7 +81,7 @@ fi
 echo "=== UWB Mesh Tracker Build ==="
 echo "Board:     ${BOARD}"
 echo "Build dir: ${BUILD_DIR}"
-echo "SDK:       ${SDK_DIR}"
+echo "Workspace: ${WEST_DIR} ($([ "$USE_WORKSPACE" = true ] && echo 'west manifest' || echo 'nrfutil SDK'))"
 echo ""
 
 # Clean if requested
@@ -77,10 +90,13 @@ if [ "$DO_CLEAN" = true ] && [ -d "${BUILD_DIR}" ]; then
     rm -rf "${BUILD_DIR}"
 fi
 
-# Run west build from inside the SDK workspace
-cd "${SDK_DIR}"
+# Run west build from inside the workspace
+cd "${WEST_DIR}"
 
-EXTRA_ARGS="-DZEPHYR_EXTRA_MODULES=${SCRIPT_DIR}/../zephyr-dw3000-decadriver"
+EXTRA_ARGS=""
+if [ "$USE_WORKSPACE" = false ]; then
+    EXTRA_ARGS="-DZEPHYR_EXTRA_MODULES=${PROJECT_ROOT}/zephyr-dw3000-decadriver"
+fi
 
 # DWM3001CDK (nRF52833, 512KB) needs single-slot MCUboot + serial recovery
 if [[ "$BOARD" == *"dwm3001"* ]]; then
@@ -107,7 +123,7 @@ echo "=== Build successful ==="
 
 if [[ "$BOARD" == "xiao_ble" ]]; then
     # XIAO BLE: app-only build — convert zephyr.hex to UF2 and generate DFU package
-    UF2_SCRIPT="${SDK_DIR}/zephyr/scripts/build/uf2conv.py"
+    UF2_SCRIPT="${WEST_DIR}/zephyr/scripts/build/uf2conv.py"
     "${TOOLCHAIN}/usr/local/bin/python3" "${UF2_SCRIPT}" -c -f 0xada52840 \
         -o "${BUILD_DIR}/zephyr/zephyr.uf2" "${BUILD_DIR}/zephyr/zephyr.hex"
 

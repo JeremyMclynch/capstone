@@ -1,23 +1,29 @@
-# SDKs - large files
-DW3_QM33_SDK_1.1.1/
-v3.2.2/
-dw3000-decadriver-source/
-libdeca/
-zephyr-dw3000-decadriver/
-zephyr-dw3000-examples/
+# West workspace dependencies (fetched by `west update`)
+/.west/
+/nrf/
+/zephyr/
+/bootloader/
+/modules/
+/nrfxlib/
+/test/
+/zephyr-dw3000-decadriver/
+
+# Reference SDKs (vendor docs, not part of build)
+/references/
 
 # Firmware build output
 firmware/build/
 
-# Python server
-server/__pycache__/
-server/*.pyc
-server/uwb_measurements.db
+# Host tools built from source
+/tools/openthread/
+
+# Python
+__pycache__/
+*.pyc
 *.egg-info/
 .venv/
-__pycache__/
+tools/server/uwb_measurements.db
 
 # Temporary files
-scripts/tmp/
-plan.md
+tools/scripts/tmp/
 *.pdf
