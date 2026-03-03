@@ -19,6 +19,9 @@ Commands:
     set-server <ipv6> <port>    Set CoAP server address and port
     start                       Start ranging
     stop                        Stop ranging
+    calibrate                   Auto-calibrate: compute offset from 1m reference
+    get-cal-offset              Get current calibration offset (mm)
+    set-cal-offset <mm>         Manually set calibration offset (mm)
     save                        Save config to flash (persists across reboots)
     factory-reset               Erase config and reboot with defaults
     reboot                      Reboot the device
@@ -53,6 +56,9 @@ CMD_SAVE_CONFIG   = 0x20
 CMD_FACTORY_RESET = 0x21
 CMD_ENTER_BOOTLOADER = 0x22
 CMD_REBOOT           = 0x23
+CMD_CALIBRATE        = 0x30
+CMD_SET_CAL_OFFSET   = 0x31
+CMD_GET_CAL_OFFSET   = 0x32
 
 STATUS_NAMES = {
     0x00: "OK",
@@ -158,6 +164,25 @@ class UWBDeviceBase:
     def reboot(self) -> str:
         status, _ = self._send_request(CMD_REBOOT)
         return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def calibrate(self) -> dict:
+        status, payload = self._send_request(CMD_CALIBRATE)
+        if status != 0 or len(payload) < 2:
+            return {"error": STATUS_NAMES.get(status, f"0x{status:02X}")}
+        offset = struct.unpack_from("<h", payload, 0)[0]
+        return {"offset_mm": offset}
+
+    def set_cal_offset(self, offset_mm: int) -> str:
+        payload = struct.pack("<h", offset_mm)
+        status, _ = self._send_request(CMD_SET_CAL_OFFSET, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def get_cal_offset(self) -> dict:
+        status, payload = self._send_request(CMD_GET_CAL_OFFSET)
+        if status != 0 or len(payload) < 2:
+            return {"error": STATUS_NAMES.get(status, f"0x{status:02X}")}
+        offset = struct.unpack_from("<h", payload, 0)[0]
+        return {"offset_mm": offset}
 
 
 # ── Serial UART transport ────────────────────────────────────────────
@@ -386,6 +411,31 @@ def main():
         elif cmd == "reboot":
             result = dev.reboot()
             print(f"  reboot: {result}")
+
+        elif cmd == "calibrate":
+            result = dev.calibrate()
+            if "error" in result:
+                print(f"  calibrate: Error — {result['error']}")
+                print("  Ensure ranging is active with measurements before calibrating.")
+            else:
+                print(f"  calibrate: OK")
+                print(f"  offset: {result['offset_mm']} mm")
+                print("  Use 'save' to persist calibration to flash.")
+
+        elif cmd == "set-cal-offset":
+            if not args:
+                print("Usage: set-cal-offset <mm>")
+                sys.exit(1)
+            offset = int(args[0])
+            result = dev.set_cal_offset(offset)
+            print(f"  set-cal-offset: {result}")
+
+        elif cmd == "get-cal-offset":
+            result = dev.get_cal_offset()
+            if "error" in result:
+                print(f"  get-cal-offset: Error — {result['error']}")
+            else:
+                print(f"  offset: {result['offset_mm']} mm")
 
         else:
             print(f"Unknown command: {cmd}")

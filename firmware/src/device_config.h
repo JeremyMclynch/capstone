@@ -18,6 +18,7 @@ struct device_config {
     char     server_addr[SERVER_ADDR_MAX_LEN]; /* CoAP server IPv6 string */
     uint16_t server_port;                  /* CoAP server UDP port */
     bool     autostart;                    /* Auto-start ranging on boot */
+    int16_t  calibration_offset_mm;        /* Distance calibration offset (mm) */
 };
 
 /* Global runtime config — initialized by device_config_init() */

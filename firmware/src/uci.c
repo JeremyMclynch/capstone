@@ -265,6 +265,13 @@ static void handle_enter_bootloader(const struct uci_request *req,
     LOG_INF("Entering MCUboot serial recovery...");
     k_sleep(K_MSEC(100));
     sys_reboot(SYS_REBOOT_WARM);
+#elif defined(CONFIG_BOARD_XIAO_BLE)
+    /* Adafruit UF2 bootloader: write magic to GPREGRET and reset */
+    NRF_POWER->GPREGRET = 0x57; /* DFU_MAGIC_UF2_RESET */
+    rsp_ok(rsp, req->cmd);
+    LOG_INF("Entering UF2 bootloader...");
+    k_sleep(K_MSEC(100));
+    sys_reboot(SYS_REBOOT_WARM);
 #else
     LOG_WRN("Bootloader entry not supported on this board");
     rsp_err(rsp, req->cmd, UCI_STATUS_ERR_UNKNOWN_CMD);
@@ -279,6 +286,67 @@ static void handle_reboot(const struct uci_request *req,
     LOG_INF("Reboot requested via UCI");
     k_sleep(K_MSEC(100));
     sys_reboot(SYS_REBOOT_COLD);
+}
+
+static void handle_calibrate(const struct uci_request *req,
+                             struct uci_response *rsp)
+{
+    /* Only anchors compute distance — calibrate is meaningless on tags */
+    if (g_config.role != ROLE_ANCHOR) {
+        LOG_WRN("Calibrate rejected: only anchors compute distance");
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_INVALID_VAL);
+        return;
+    }
+
+    struct uwb_status st;
+    uwb_manager_get_status(&st);
+
+    if (!st.running || st.range_count == 0) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BUSY);
+        return;
+    }
+
+    /* Get raw distance by removing current offset */
+    int32_t raw_mm = (int32_t)st.last_distance_mm - g_config.calibration_offset_mm;
+    int16_t new_offset = (int16_t)(1000 - raw_mm);
+
+    g_config.calibration_offset_mm = new_offset;
+
+    LOG_INF("Calibrated: raw=%d mm, offset=%d mm", raw_mm, (int)new_offset);
+
+    rsp->cmd = req->cmd;
+    rsp->status = UCI_STATUS_OK;
+    rsp->payload[0] = (uint8_t)(new_offset & 0xFF);
+    rsp->payload[1] = (uint8_t)((new_offset >> 8) & 0xFF);
+    rsp->len = 2;
+}
+
+static void handle_set_cal_offset(const struct uci_request *req,
+                                   struct uci_response *rsp)
+{
+    if (req->len != 2) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BAD_PAYLOAD);
+        return;
+    }
+
+    int16_t offset = (int16_t)((uint16_t)req->payload[0] |
+                               ((uint16_t)req->payload[1] << 8));
+    g_config.calibration_offset_mm = offset;
+
+    LOG_INF("Calibration offset set to %d mm", (int)offset);
+    rsp_ok(rsp, req->cmd);
+}
+
+static void handle_get_cal_offset(const struct uci_request *req,
+                                   struct uci_response *rsp)
+{
+    int16_t offset = g_config.calibration_offset_mm;
+
+    rsp->cmd = req->cmd;
+    rsp->status = UCI_STATUS_OK;
+    rsp->payload[0] = (uint8_t)(offset & 0xFF);
+    rsp->payload[1] = (uint8_t)((offset >> 8) & 0xFF);
+    rsp->len = 2;
 }
 
 /* ── Dispatcher ───────────────────────────────────────────────────── */
@@ -298,6 +366,9 @@ void uci_process(const struct uci_request *req, struct uci_response *rsp)
     case UCI_CMD_FACTORY_RESET: handle_factory_reset(req, rsp);  break;
     case UCI_CMD_ENTER_BOOTLOADER: handle_enter_bootloader(req, rsp); break;
     case UCI_CMD_REBOOT:        handle_reboot(req, rsp);             break;
+    case UCI_CMD_CALIBRATE:     handle_calibrate(req, rsp);          break;
+    case UCI_CMD_SET_CAL_OFFSET: handle_set_cal_offset(req, rsp);   break;
+    case UCI_CMD_GET_CAL_OFFSET: handle_get_cal_offset(req, rsp);   break;
     default:
         LOG_WRN("Unknown UCI cmd 0x%02X", req->cmd);
         rsp_err(rsp, req->cmd, UCI_STATUS_ERR_UNKNOWN_CMD);

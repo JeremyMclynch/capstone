@@ -319,12 +319,20 @@ static void responder_loop(void)
         float  dist_m  = (float)(tof_s * SPEED_OF_LIGHT);
 
         last_distance_mm = (uint32_t)(dist_m * 1000.0f);
+
+        /* Apply calibration offset */
+        int32_t calibrated_mm = (int32_t)last_distance_mm + g_config.calibration_offset_mm;
+        last_distance_mm = (calibrated_mm > 0) ? (uint32_t)calibrated_mm : 0;
+
+        float calibrated_dist = dist_m + (g_config.calibration_offset_mm / 1000.0f);
+        if (calibrated_dist < 0.0f) calibrated_dist = 0.0f;
+
         range_count++;
 
-        LOG_INF("Distance: %.3f m (tag=0x%04X)", (double)dist_m, tag_addr);
+        LOG_INF("Distance: %.3f m (tag=0x%04X)", (double)calibrated_dist, tag_addr);
 
         if (distance_cb)
-            distance_cb(g_config.uwb_addr, tag_addr, dist_m);
+            distance_cb(g_config.uwb_addr, tag_addr, calibrated_dist);
     }
 }
 
@@ -599,4 +607,9 @@ void uwb_manager_get_status(struct uwb_status *status)
     status->running          = atomic_get(&uwb_running) != 0;
     status->last_distance_mm = last_distance_mm;
     status->range_count      = range_count;
+}
+
+uint32_t uwb_manager_get_last_distance_mm(void)
+{
+    return last_distance_mm;
 }

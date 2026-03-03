@@ -41,7 +41,7 @@ EVT_NAMES = {
 
 _dist_count = 0
 _evt_count  = 0
-_t_last_dist = None
+_t_last_dist: dict[tuple[int, int], float] = {}
 
 # Regex to match Zephyr log lines with ANSI escapes:
 # [00:00:01.234,000] <inf> uwb_manager: Distance: -0.123 m (tag=0x0100)
@@ -65,8 +65,10 @@ class DistanceResource(resource.Resource):
         distance_m = distance_mm / 1000.0
 
         now  = time.monotonic()
-        rate = f"  ({1/(now - _t_last_dist):.1f} Hz)" if _t_last_dist else ""
-        _t_last_dist = now
+        pair = (anchor_id, tag_id)
+        prev = _t_last_dist.get(pair)
+        rate = f"  ({1/(now - prev):.1f} Hz)" if prev else ""
+        _t_last_dist[pair] = now
         _dist_count += 1
 
         src = request.remote.hostinfo if request.remote else "?"
@@ -144,8 +146,10 @@ async def serial_reader(port, baud=115200):
             uptime_s += int(sec_parts[0])
 
             now = time.monotonic()
-            rate = f"  ({1/(now - _t_last_dist):.1f} Hz)" if _t_last_dist else ""
-            _t_last_dist = now
+            pair = (0x0002, tag_id)
+            prev = _t_last_dist.get(pair)
+            rate = f"  ({1/(now - prev):.1f} Hz)" if prev else ""
+            _t_last_dist[pair] = now
             _dist_count += 1
 
             print(

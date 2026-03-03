@@ -27,6 +27,7 @@ struct device_config g_config;
 #define SETTINGS_KEY_SERVER    "uwb/server"
 #define SETTINGS_KEY_PORT      "uwb/port"
 #define SETTINGS_KEY_AUTOSTART "uwb/autostart"
+#define SETTINGS_KEY_CAL_OFFSET "uwb/cal_offset"
 
 /* ── Load Kconfig defaults into g_config ─────────────────────────── */
 
@@ -40,6 +41,7 @@ static void load_defaults(void)
     g_config.server_addr[sizeof(g_config.server_addr) - 1] = '\0';
     g_config.server_port = CONFIG_COAP_SERVER_PORT;
     g_config.autostart = true;
+    g_config.calibration_offset_mm = 0;
 }
 
 /* ── Settings handler (called by settings_load()) ────────────────── */
@@ -73,6 +75,11 @@ static int config_set(const char *name, size_t len, settings_read_cb read_cb,
         if (len != sizeof(g_config.autostart)) return -EINVAL;
         return read_cb(cb_arg, &g_config.autostart, sizeof(g_config.autostart));
     }
+    if (!strcmp(name, "cal_offset")) {
+        if (len != sizeof(g_config.calibration_offset_mm)) return -EINVAL;
+        return read_cb(cb_arg, &g_config.calibration_offset_mm,
+                       sizeof(g_config.calibration_offset_mm));
+    }
 
     return -ENOENT;
 }
@@ -99,13 +106,14 @@ int device_config_init(void)
         return ret;
     }
 
-    LOG_INF("Config: role=%s addr=0x%04X interval=%u ms server=[%s]:%u auto=%d",
+    LOG_INF("Config: role=%s addr=0x%04X interval=%u ms server=[%s]:%u auto=%d cal=%d",
             g_config.role == ROLE_TAG ? "TAG" : "ANCHOR",
             g_config.uwb_addr,
             g_config.ranging_interval_ms,
             g_config.server_addr,
             g_config.server_port,
-            g_config.autostart);
+            g_config.autostart,
+            g_config.calibration_offset_mm);
 
     return 0;
 }
@@ -139,6 +147,10 @@ int device_config_save(void)
                           sizeof(g_config.autostart));
     if (r) { LOG_ERR("save autostart: %d", r); ret = r; }
 
+    r = settings_save_one(SETTINGS_KEY_CAL_OFFSET, &g_config.calibration_offset_mm,
+                          sizeof(g_config.calibration_offset_mm));
+    if (r) { LOG_ERR("save cal_offset: %d", r); ret = r; }
+
     if (!ret) {
         LOG_INF("Config saved to NVS");
     }
@@ -155,7 +167,8 @@ int device_config_reset(void)
     r = settings_delete(SETTINGS_KEY_INTERVAL);  if (r) ret = r;
     r = settings_delete(SETTINGS_KEY_SERVER);    if (r) ret = r;
     r = settings_delete(SETTINGS_KEY_PORT);      if (r) ret = r;
-    r = settings_delete(SETTINGS_KEY_AUTOSTART); if (r) ret = r;
+    r = settings_delete(SETTINGS_KEY_AUTOSTART);   if (r) ret = r;
+    r = settings_delete(SETTINGS_KEY_CAL_OFFSET);  if (r) ret = r;
 
     if (!ret) {
         LOG_INF("Config erased — defaults will be used on next boot");

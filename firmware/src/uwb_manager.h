@@ -69,4 +69,10 @@ void uwb_manager_set_interval(uint16_t interval_ms);
  */
 void uwb_manager_get_status(struct uwb_status *status);
 
+/**
+ * @brief Get last measured distance in mm (after calibration offset).
+ * @return Distance in mm, or 0 if no measurement yet.
+ */
+uint32_t uwb_manager_get_last_distance_mm(void);
+
 #endif /* UWB_MANAGER_H */

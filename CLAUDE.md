@@ -83,6 +83,9 @@ python3 tools/scripts/uwb_tool.py /dev/ttyACM1 status
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 stop
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 start
 python3 tools/scripts/uwb_tool.py /dev/ttyACM3 set-interval 500
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 calibrate      # auto-calibrate from 1m reference
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 get-cal-offset # read current calibration offset
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 set-cal-offset 50  # manually set offset (mm)
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 save          # persist to NVS flash
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 reboot        # reboot device
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 factory-reset
@@ -125,6 +128,21 @@ Tag serial recovery:
 # Hold P0.02 button, reset board, then:
 mcumgr --conntype serial --connstring dev=/dev/ttyACM3,baud=115200 image upload firmware/build/decawave_dwm3001cdk/firmware/zephyr/zephyr.signed.bin
 ```
+
+## Distance Calibration
+
+DS-TWR measurements have a systematic offset from antenna delays and environmental factors. Calibrate by placing anchor and tag exactly 1 meter apart:
+
+```bash
+# 1. Ensure ranging is active and producing measurements
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 start
+# 2. Wait a few seconds for stable measurements, then calibrate
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 calibrate
+# 3. Save offset to flash
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 save
+```
+
+The `calibrate` command reads the current distance, computes `offset = 1000 - raw_mm`, and stores it as `calibration_offset_mm` (signed int16_t, ±32m range). The offset is applied to all subsequent distance measurements. Factory reset clears the calibration.
 
 ## Architecture
 

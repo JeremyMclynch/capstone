@@ -29,6 +29,9 @@
 #define UCI_CMD_FACTORY_RESET   0x21
 #define UCI_CMD_ENTER_BOOTLOADER 0x22
 #define UCI_CMD_REBOOT          0x23
+#define UCI_CMD_CALIBRATE       0x30
+#define UCI_CMD_SET_CAL_OFFSET  0x31
+#define UCI_CMD_GET_CAL_OFFSET  0x32
 
 /* ── Status codes ────────────────────────────────────────────────── */
 
