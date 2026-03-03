@@ -34,6 +34,8 @@ Board targets must include the SoC qualifier: `nrf52840dk/nrf52840` not `nrf5284
 
 ## Hardware
 
+Use `nrfutil device list` to identify serial port assignments (they can change between reboots).
+
 | Device | Role | Serial/dev-id | UART |
 |---|---|---|---|
 | nRF52840 DK + DWM3000EVB | Anchor (DS-TWR responder) | 1050222631 | /dev/ttyACM1 |

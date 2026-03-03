@@ -152,16 +152,8 @@ static void coap_send_evt_work_handler(struct k_work *work)
 
 /* ── OpenThread state change handler ────────────────────────────── */
 
-static void on_thread_state_changed(otChangedFlags flags, void *user_data)
+static void thread_role_update(otDeviceRole role)
 {
-    ARG_UNUSED(user_data);
-    struct otInstance *instance = openthread_get_default_instance();
-
-    if (!(flags & OT_CHANGED_THREAD_ROLE)) {
-        return;
-    }
-
-    otDeviceRole role = otThreadGetDeviceRole(instance);
     switch (role) {
     case OT_DEVICE_ROLE_CHILD:
     case OT_DEVICE_ROLE_ROUTER:
@@ -175,6 +167,15 @@ static void on_thread_state_changed(otChangedFlags flags, void *user_data)
         thread_connected = false;
         LOG_INF("Thread disconnected");
         break;
+    }
+}
+
+static void on_thread_state_changed(otChangedFlags flags, void *user_data)
+{
+    ARG_UNUSED(user_data);
+    if (flags & OT_CHANGED_THREAD_ROLE) {
+        struct otInstance *instance = openthread_get_default_instance();
+        thread_role_update(otThreadGetDeviceRole(instance));
     }
 }
 

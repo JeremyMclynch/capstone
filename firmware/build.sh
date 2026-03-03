@@ -14,9 +14,9 @@
 #   ./build.sh nrf52840dk/nrf52840 --clean      # Clean rebuild
 #
 # Board → Default Role:
-#   nrf52840dk/nrf52840     → ANCHOR (addr 0x0001)
-#   decawave_dwm3001cdk     → TAG    (addr 0x0100)
-#   xiao_ble                → TAG    (addr 0x0200)
+#   nrf52840dk/nrf52840               → ANCHOR (addr 0x0001)
+#   decawave_dwm3001cdk               → TAG    (addr 0x0100)
+#   xiao_ble                          → TAG    (addr 0x0200)
 #
 # To build as TAG on nRF52840DK, add:
 #   -- -DCONFIG_NODE_ROLE_TAG=y -DCONFIG_NODE_ROLE_ANCHOR=n \
@@ -34,14 +34,6 @@ BOARD="${1:-nrf52840dk/nrf52840}"
 DO_FLASH=false
 DO_CLEAN=false
 
-# Set up toolchain environment
-export PATH="${TOOLCHAIN}/bin:${TOOLCHAIN}/usr/bin:${TOOLCHAIN}/usr/local/bin:${TOOLCHAIN}/opt/bin:${TOOLCHAIN}/opt/zephyr-sdk/arm-zephyr-eabi/bin:/usr/bin:/bin"
-export LD_LIBRARY_PATH="${TOOLCHAIN}/lib:${TOOLCHAIN}/lib/x86_64-linux-gnu:${TOOLCHAIN}/usr/local/lib"
-export PYTHONHOME="${TOOLCHAIN}/usr/local"
-export PYTHONPATH="${TOOLCHAIN}/usr/local/lib/python3.12:${TOOLCHAIN}/usr/local/lib/python3.12/site-packages"
-export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
-export ZEPHYR_SDK_INSTALL_DIR="${TOOLCHAIN}/opt/zephyr-sdk"
-
 # Parse flags
 for arg in "$@"; do
     case "$arg" in
@@ -50,6 +42,14 @@ for arg in "$@"; do
     esac
 done
 
+# Set up nRF Connect SDK toolchain environment
+export PATH="${TOOLCHAIN}/bin:${TOOLCHAIN}/usr/bin:${TOOLCHAIN}/usr/local/bin:${TOOLCHAIN}/opt/bin:${TOOLCHAIN}/opt/zephyr-sdk/arm-zephyr-eabi/bin:/usr/bin:/bin"
+export LD_LIBRARY_PATH="${TOOLCHAIN}/lib:${TOOLCHAIN}/lib/x86_64-linux-gnu:${TOOLCHAIN}/usr/local/lib"
+export PYTHONHOME="${TOOLCHAIN}/usr/local"
+export PYTHONPATH="${TOOLCHAIN}/usr/local/lib/python3.12:${TOOLCHAIN}/usr/local/lib/python3.12/site-packages"
+export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
+export ZEPHYR_SDK_INSTALL_DIR="${TOOLCHAIN}/opt/zephyr-sdk"
+
 # Sanitize board name for directory (replace / with -)
 BUILD_SUBDIR="${BOARD//\//-}"
 BUILD_DIR="${APP_DIR}/build/${BUILD_SUBDIR}"
@@ -57,11 +57,10 @@ BUILD_DIR="${APP_DIR}/build/${BUILD_SUBDIR}"
 # Validate SDK exists
 if [ ! -d "${SDK_DIR}" ]; then
     echo "ERROR: nRF Connect SDK not found at ${SDK_DIR}"
-    echo "       Expected the v3.2.2/ directory to be a sibling of firmware/"
     exit 1
 fi
 
-# Source the SDK environment if nrfutil is available
+# Check nrfutil
 if command -v nrfutil &>/dev/null; then
     echo "[build.sh] nrfutil found: $(nrfutil --version)"
 fi

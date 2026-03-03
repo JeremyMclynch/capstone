@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
 """
-UWB monitor — receives CoAP POSTs from anchor (distance) and tag (events).
+UWB monitor — receives CoAP POSTs from anchor (distance) and tag (events),
+and optionally reads distance measurements from a serial port.
 
 Usage:
-    python3 monitor.py
+    python3 monitor.py                           # CoAP only
+    python3 monitor.py -s /dev/ttyACM1           # CoAP + serial
+    python3 monitor.py -d -s /dev/ttyACM1        # distance only, with serial
 
 Resources:
   POST /distance  — from anchor, 12-byte distance measurement
   POST /event     — from tag,    6-byte UWB packet event
 
-No dependencies beyond aiocoap:
-    pip install aiocoap
+Dependencies:
+    pip install aiocoap pyserial
 """
 
 import argparse
 import asyncio
+import re
 import struct
 import time
 import aiocoap
@@ -38,6 +42,14 @@ EVT_NAMES = {
 _dist_count = 0
 _evt_count  = 0
 _t_last_dist = None
+
+# Regex to match Zephyr log lines with ANSI escapes:
+# [00:00:01.234,000] <inf> uwb_manager: Distance: -0.123 m (tag=0x0100)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_SERIAL_DIST_RE = re.compile(
+    r"\[(\d+:\d+:\d+\.\d+),?\d*\].*Distance:\s+([-\d.]+)\s+m"
+    r"(?:\s+\(tag=0x([0-9A-Fa-f]+)\))?"
+)
 
 
 class DistanceResource(resource.Resource):
@@ -93,15 +105,76 @@ class EventResource(resource.Resource):
         return aiocoap.Message(code=aiocoap.CHANGED)
 
 
+async def serial_reader(port, baud=115200):
+    """Read distance log lines from a serial port."""
+    global _dist_count, _t_last_dist
+
+    import serial
+
+    loop = asyncio.get_event_loop()
+    ser = serial.Serial(port, baud, timeout=0.1)
+    ser.reset_input_buffer()
+    print(f"Serial: reading from {port} @ {baud}")
+
+    try:
+        while True:
+            # Non-blocking readline in executor to avoid blocking the event loop
+            line = await loop.run_in_executor(None, ser.readline)
+            if not line:
+                continue
+            try:
+                text = line.decode("utf-8", errors="replace").strip()
+                text = _ANSI_RE.sub("", text)  # strip ANSI escape codes
+            except Exception:
+                continue
+
+            m = _SERIAL_DIST_RE.search(text)
+            if not m:
+                continue
+
+            uptime_str = m.group(1)
+            distance_m = float(m.group(2))
+            tag_hex = m.group(3)
+            tag_id = int(tag_hex, 16) if tag_hex else 0
+
+            # Parse uptime HH:MM:SS.mmm
+            parts = uptime_str.split(":")
+            uptime_s = int(parts[0]) * 3600 + int(parts[1]) * 60
+            sec_parts = parts[2].split(".")
+            uptime_s += int(sec_parts[0])
+
+            now = time.monotonic()
+            rate = f"  ({1/(now - _t_last_dist):.1f} Hz)" if _t_last_dist else ""
+            _t_last_dist = now
+            _dist_count += 1
+
+            print(
+                f"[DIST {_dist_count:>4}]  anchor=0x0002  tag=0x{tag_id:04X}"
+                f"  dist={distance_m:7.3f} m  uptime={uptime_s:6d}s"
+                f"  from={port}{rate}"
+            )
+    except asyncio.CancelledError:
+        pass
+    finally:
+        ser.close()
+
+
 async def main():
     parser = argparse.ArgumentParser(description="UWB CoAP monitor")
     parser.add_argument("-d", "--distance-only", action="store_true",
                         help="show only anchor distance messages, suppress tag events")
+    parser.add_argument("-s", "--serial", metavar="PORT",
+                        help="read distance logs from serial port (e.g. /dev/ttyUSB0)")
+    parser.add_argument("-b", "--baud", type=int, default=115200,
+                        help="serial baud rate (default: 115200)")
     args = parser.parse_args()
 
     mode = "distance only" if args.distance_only else "distance + events"
+    sources = "CoAP"
+    if args.serial:
+        sources += f" + serial ({args.serial})"
     print("UWB Monitor")
-    print(f"Listening on [::]:5683  ({mode})")
+    print(f"Listening on [::]:5683  ({mode}, {sources})")
     print("Press Ctrl-C to stop.\n")
 
     site = resource.Site()
@@ -110,11 +183,21 @@ async def main():
 
     context = await aiocoap.Context.create_server_context(site, bind=("::", 5683))
 
+    serial_task = None
+    if args.serial:
+        serial_task = asyncio.create_task(serial_reader(args.serial, args.baud))
+
     try:
         await asyncio.get_event_loop().create_future()
     except asyncio.CancelledError:
         pass
     finally:
+        if serial_task:
+            serial_task.cancel()
+            try:
+                await serial_task
+            except asyncio.CancelledError:
+                pass
         await context.shutdown()
         print(f"\nTotal: {_dist_count} distance measurements, {_evt_count} tag events.")
 

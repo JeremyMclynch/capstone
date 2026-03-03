@@ -131,7 +131,9 @@ static void cb_rx_err(const dwt_cb_data_t *data)  { ARG_UNUSED(data); k_sem_give
 
 static uwb_event_t wait_for_event(k_timeout_t timeout)
 {
-    int64_t deadline = k_uptime_get() + k_ticks_to_ms_floor64(timeout.ticks);
+    bool forever = K_TIMEOUT_EQ(timeout, K_FOREVER);
+    int64_t deadline = forever ? 0 :
+        k_uptime_get() + k_ticks_to_ms_floor64(timeout.ticks);
 
     while (1) {
         if (k_sem_take(&sem_rx_ok,   K_NO_WAIT) == 0) return EVT_RX_OK;
@@ -139,7 +141,7 @@ static uwb_event_t wait_for_event(k_timeout_t timeout)
         if (k_sem_take(&sem_rx_to,   K_NO_WAIT) == 0) return EVT_RX_TO;
         if (k_sem_take(&sem_rx_err,  K_NO_WAIT) == 0) return EVT_RX_ERR;
 
-        if (k_uptime_get() >= deadline) return EVT_RX_TO;
+        if (!forever && k_uptime_get() >= deadline) return EVT_RX_TO;
 
         k_sleep(K_USEC(100));
     }
@@ -319,7 +321,7 @@ static void responder_loop(void)
         last_distance_mm = (uint32_t)(dist_m * 1000.0f);
         range_count++;
 
-        LOG_INF("Distance: %.3f m", (double)dist_m);
+        LOG_INF("Distance: %.3f m (tag=0x%04X)", (double)dist_m, tag_addr);
 
         if (distance_cb)
             distance_cb(g_config.uwb_addr, tag_addr, dist_m);
@@ -468,7 +470,6 @@ int uwb_manager_init(void)
         return ret;
     }
 
-    dw3000_spi_speed_fast();
     dw3000_hw_reset();
     k_msleep(2);
 
@@ -478,17 +479,25 @@ int uwb_manager_init(void)
     }
     LOG_INF("dwt_probe OK");
 
+    /* Switch to fast SPI after successful probe (probe runs at 2MHz slow speed) */
+    dw3000_spi_speed_fast();
+
+    /*
+     * dwt_initialise() must be called before dwt_checkidlerc() because
+     * ull_initialise() assigns dw->priv which all register-access functions
+     * (via dwt_xfer3xxx / LOCAL_DATA(dw)->spicrc) depend on.
+     */
+    if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR) {
+        LOG_ERR("dwt_initialise failed");
+        return -EIO;
+    }
+
     uint32_t timeout = 200;
     while (!dwt_checkidlerc() && timeout--)
         k_msleep(1);
     if (!timeout) {
         LOG_ERR("DW3000 not idle");
         return -ETIMEDOUT;
-    }
-
-    if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR) {
-        LOG_ERR("dwt_initialise failed");
-        return -EIO;
     }
 
     if (dwt_configure(&uwb_config) == DWT_ERROR) {
@@ -505,9 +514,10 @@ int uwb_manager_init(void)
     tx_ant_dly = otp_ant_dly & 0xFFFF;
     uint16_t rx_ant_dly = (otp_ant_dly >> 16) & 0xFFFF;
 
-    /* Fall back to characterized value if OTP is blank */
-    if (tx_ant_dly == 0) tx_ant_dly = ANT_DLY_FALLBACK;
-    if (rx_ant_dly == 0) rx_ant_dly = ANT_DLY_FALLBACK;
+    /* Sanity-check: valid antenna delays are ~16000-16500 for DW3000.
+     * Values outside this range indicate blank/corrupt OTP → use fallback. */
+    if (tx_ant_dly < 10000 || tx_ant_dly > 20000) tx_ant_dly = ANT_DLY_FALLBACK;
+    if (rx_ant_dly < 10000 || rx_ant_dly > 20000) rx_ant_dly = ANT_DLY_FALLBACK;
 
     LOG_INF("Antenna delay: TX=%u RX=%u (OTP=0x%08X)", tx_ant_dly, rx_ant_dly, otp_ant_dly);
     dwt_setrxantennadelay(rx_ant_dly);

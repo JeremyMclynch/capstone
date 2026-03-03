@@ -1,6 +1,6 @@
 # UWB Mesh Tracker — Project Status
 
-_Last updated: 2026-02-28_
+_Last updated: 2026-03-02_
 
 ---
 
@@ -64,7 +64,7 @@ _Last updated: 2026-02-28_
 ```
 ┌─────────────────────────────┐         ┌─────────────────────────────┐
 │   DWM3001CDK (TAG)          │         │  nRF52840 DK + DWM3000EVB   │
-│   nRF52833                  │   UWB   │  (ANCHOR)  nRF52840         │
+│   nRF52833                  │   UWB   │  (ANCHOR 0x0001) nRF52840   │
 │                             │◄───────►│                             │
 │  Role: DS-TWR Initiator     │  radio  │  Role: DS-TWR Responder     │
 │  - Sends POLL               │         │  - Receives POLL            │
@@ -130,9 +130,9 @@ _Last updated: 2026-02-28_
 
 | Device | Role | Serial | UART | Flash Used | RAM Used |
 |---|---|---|---|---|---|
-| nRF52840 DK + DWM3000EVB shield | Anchor / DS-TWR Responder | 1050222631 | /dev/ttyACM1 | 71% (348KB/491KB) | 54% (141KB/256KB) |
-| DWM3001CDK | Tag / DS-TWR Initiator | 760206311 | /dev/ttyACM3 | 70% (331KB/475KB) | 93% (122KB/128KB) |
-| XIAO BLE + DWM3000EVB (wires) | Tag / DS-TWR Initiator | — | TBD | 77% (358KB/464KB) | 57% (146KB/256KB) |
+| nRF52840 DK + DWM3000EVB shield | Anchor 0x0001 / DS-TWR Responder | 1050222631 | /dev/ttyACM1 | 71% (348KB/491KB) | 54% (141KB/256KB) |
+| DWM3001CDK | Tag 0x0100 / DS-TWR Initiator | 760206311 | /dev/ttyACM3 | 70% (331KB/475KB) | 93% (122KB/128KB) |
+| XIAO BLE + DWM3000EVB (wires) | Tag 0x0200 / DS-TWR Initiator | — | TBD | 77% (358KB/464KB) | 57% (146KB/256KB) |
 | nRF52840 USB Dongle | Thread RCP (border interface) | — | /dev/ttyACM0 | — | — |
 
 ### XIAO BLE → DWM3000EVB Wiring
@@ -243,15 +243,16 @@ mcumgr --conntype udp --connstring=[<ipv6-addr>]:1337 image list    # Show insta
 | File | Purpose |
 |---|---|
 | `firmware/src/main.c` | Boot, init, wiring (config → thread → uci_coap → uwb → uci_uart) |
+| `firmware/src/leds.h` | LED abstraction (wraps DK library) |
 | `firmware/src/uwb_manager.c/h` | DS-TWR ranging (interrupt-driven, start/stop/status) |
-| `firmware/src/thread_coap.c/h` | Thread networking + CoAP POST (distance + events) |
+| `firmware/src/thread_coap.c/h` | Thread networking + CoAP POST |
 | `firmware/src/device_config.c/h` | NVS-backed runtime config (role, addr, interval, server) |
 | `firmware/src/uci.c/h` | UCI binary protocol handler + command dispatch (mutex-protected) |
 | `firmware/src/uci_uart.c` | UART transport (ISR RX, state machine, response TX) |
 | `firmware/src/uci_coap.c` | CoAP transport (OT CoAP server, POST /cmd, remote UCI) |
 | `firmware/Kconfig` | Custom Kconfig options (role, addr, interval, server, etc.) |
-| `firmware/prj.conf` | Base project config (Thread, CoAP, DW3000, NVS, MCUmgr, reboot) |
-| `firmware/boards/*.conf` | Per-board overrides (role, chip variant, logging) |
+| `firmware/prj.conf` | Base project config (Thread, CoAP, DW3000, NVS, reboot — portable across SDKs) |
+| `firmware/boards/*.conf` | Per-board overrides (role, chip variant, logging, nRF-specific Kconfig) |
 | `firmware/boards/*.overlay` | Per-board device tree (SPI, GPIO, IRQ pins) |
 | `firmware/sysbuild.conf` | MCUboot bootloader enable (sysbuild) |
 | `firmware/sysbuild_dwm3001cdk.conf` | DWM3001CDK sysbuild overlay (single-slot MCUboot) |
@@ -267,6 +268,6 @@ mcumgr --conntype udp --connstring=[<ipv6-addr>]:1337 image list    # Show insta
 
 2. **Tag-to-tag ranging** — future goal for tags to reference other tags, requires protocol changes
 
-3. **Antenna delay calibration** — `TX_ANT_DLY`/`RX_ANT_DLY` (16385) are defaults. Calibration at a known distance would improve accuracy from ~±3cm to ~±10mm
+4. **Antenna delay calibration** — `TX_ANT_DLY`/`RX_ANT_DLY` (16385) are defaults. Calibration at a known distance would improve accuracy from ~±3cm to ~±10mm
 
-4. **Web dashboard** — visualize distance measurements in real time (FastAPI/WebSocket planned in server/)
+5. **Web dashboard** — visualize distance measurements in real time (FastAPI/WebSocket planned in server/)
