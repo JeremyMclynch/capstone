@@ -9,9 +9,11 @@ UWB Mesh Tracker — real-time indoor positioning using Ultra-Wideband (DS-TWR) 
 ## Setup (First-Time)
 
 ```bash
-# 1. Initialize west workspace and fetch all SDK dependencies (~5 GB)
-west init -l .
+# 1. Initialize west workspace (T2 topology: .west/ in parent dir)
+cd ..  # move to parent of project root
+west init -l capstone
 west update
+cd capstone
 
 # 2. Install nRF toolchain (if not already installed)
 nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2
@@ -23,7 +25,7 @@ bash tools/setup_host_tools.sh
 pip install aiocoap pyserial
 ```
 
-The `west.yml` manifest declares all SDK dependencies (nRF Connect SDK v3.2.2, Zephyr, MCUboot, DW3000 driver). The build script auto-detects the west workspace and falls back to `~/ncs/v3.2.2` if `.west/` doesn't exist.
+The `west.yml` manifest declares all SDK dependencies (nRF Connect SDK v3.2.2, Zephyr, MCUboot, DW3000 driver). Standard T2 west workspace: `.west/` and SDK repos live in the parent directory. The build script auto-detects the workspace (checks both project root and parent for `.west/`) and falls back to `~/ncs/v3.2.2` if no workspace exists.
 
 ## Build & Flash
 

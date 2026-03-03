@@ -18,6 +18,3 @@ manifest:
       remote: dw3000
       revision: 717751e248d5becf79838910c404b0193e8f88cc
       path: zephyr-dw3000-decadriver
-
-  self:
-    path: .

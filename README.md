@@ -1,42 +1,127 @@
-# UWB Mesh Tracker — System Overview
+# UWB Mesh Tracker
 
-A real-time indoor positioning system using Ultra-Wideband (UWB) ranging over a Thread mesh network.
+Real-time indoor positioning using Ultra-Wideband (DS-TWR) ranging over a Thread mesh network.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
+┌──────────────────────────────────────────────────────────────────┐
 │                        Thread Mesh Network                       │
 │                                                                  │
 │  ┌───────────────┐    UWB ranging    ┌───────────────────────┐  │
-│  │  DWM3001CDK   │◄─────────────────►│    nRF52840 DK        │  │
+│  │  DWM3001CDK   │◄────────────────►│    nRF52840 DK        │  │
 │  │  (Tag 0x0100) │                   │ + DWM3000EVB Shield   │  │
-│  │  mobile node  │  CoAP POST over   │  (Anchor 0x0001)      │  │
-│  └───────────────┘  Thread multicast └───────────────────────┘  │
-│                      ff03::1:5683/distance                       │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                       nRF USB Dongle
-                       (OpenThread RCP)
-                           wpan0
-                                │
-                    ┌───────────▼───────────┐
-                    │    Linux Host         │
-                    │  ot-daemon (Leader)   │
-                    │  coap_receiver.py     │
-                    │  or main.py + SQLite  │
-                    └───────────────────────┘
+│  │  mobile node  │                   │  (Anchor 0x0001)      │  │
+│  └───────────────┘                   └───────────────────────┘  │
+│                                                                  │
+│  ┌───────────────┐                                              │
+│  │   XIAO BLE    │    CoAP POST /distance + /event             │
+│  │  (Tag 0x0200) │    over Thread multicast ff03::1            │
+│  └───────────────┘                                              │
+└──────────────────────────────────────────────────────────────────┘
+                               │
+                      nRF USB Dongle
+                      (OpenThread RCP)
+                          wpan0
+                               │
+                   ┌───────────▼───────────┐
+                   │     Linux Host        │
+                   │  ot-daemon (Leader)   │
+                   │  monitor.py / server  │
+                   └───────────────────────┘
 ```
 
----
+nRF boards perform UWB ranging; distance measurements are sent via CoAP over Thread to a Linux host running a CoAP server with SQLite storage.
+
+## Prerequisites
+
+| Tool | Purpose | Install |
+|---|---|---|
+| [nrfutil](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) | Toolchain + flash | `nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2` |
+| [west](https://docs.zephyrproject.org/latest/develop/west/) | Zephyr meta-tool | `pip install west` |
+| Python 3.10+ | Host tools | System package manager |
+| Go 1.21+ | mcumgr CLI (OTA) | System package manager |
+
+## Setup (Fresh Clone)
+
+```bash
+# 1. Clone the repository into a workspace directory
+mkdir uwb-workspace && cd uwb-workspace
+git clone <repo-url> capstone
+
+# 2. Initialize west workspace and fetch SDK dependencies (~5 GB, takes 10-30 min)
+west init -l capstone
+west update
+
+# 3. Install nRF toolchain (if not already installed, ~3 GB)
+nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2
+
+# 4. Build host tools (OpenThread ot-daemon/ot-ctl, mcumgr CLI)
+cd capstone
+bash tools/setup_host_tools.sh
+
+# 5. Python dependencies (for monitor and server)
+pip install aiocoap pyserial
+```
+
+This creates a [T2 west workspace](https://docs.zephyrproject.org/latest/develop/west/workspaces.html) where the SDK repos (`zephyr/`, `nrf/`, `bootloader/`, etc.) are siblings of `capstone/`. All SDK directories are gitignored.
+
+## Build & Flash
+
+```bash
+# Build only
+bash firmware/build.sh nrf52840dk/nrf52840           # anchor
+bash firmware/build.sh decawave_dwm3001cdk           # tag
+bash firmware/build.sh xiao_ble                      # XIAO BLE tag
+
+# Build + flash (single board connected)
+bash firmware/build.sh nrf52840dk/nrf52840 --flash
+bash firmware/build.sh decawave_dwm3001cdk --flash
+
+# Clean rebuild
+bash firmware/build.sh nrf52840dk/nrf52840 --clean --flash
+```
+
+When both J-Link boards are connected, flash manually with `--dev-id`:
+```bash
+west flash --build-dir firmware/build/nrf52840dk-nrf52840 --dev-id 1050222631   # anchor
+west flash --build-dir firmware/build/decawave_dwm3001cdk --dev-id 760206311    # tag
+```
+
+XIAO BLE uses UF2 drag-and-drop: double-tap RST, drag `firmware/build/xiao_ble/zephyr/zephyr.uf2` to the USB drive.
+
+## Running the System
+
+### 1. Start Thread network on the Linux host
+
+```bash
+sudo bash tools/scripts/thread_dongle_setup.sh
+```
+
+This configures `ot-daemon` with the matching Thread credentials and starts the host as Thread Leader.
+
+### 2. Monitor distance measurements
+
+```bash
+# Live console output (distance + tag events)
+python3 tools/monitor.py
+
+# Full CoAP server with SQLite storage
+cd tools/server && python3 main.py
+```
+
+### 3. Verify
+
+After ~10 seconds the firmware devices join the Thread mesh. The anchor starts ranging with the tag and sends distance measurements via CoAP multicast. The monitor/server logs each arriving measurement.
 
 ## Hardware
 
-| Device | Role | J-Link S/N | Serial Port |
+| Device | Role | J-Link S/N | UART |
 |---|---|---|---|
-| nRF USB Dongle | OpenThread RCP (radio) | — | /dev/ttyACM0 |
+| nRF USB Dongle | OpenThread RCP | — | /dev/ttyACM0 |
 | nRF52840 DK + DWM3000EVB | Anchor (0x0001) | 1050222631 | /dev/ttyACM1 |
 | DWM3001CDK | Tag (0x0100) | 760206311 | /dev/ttyACM3 |
+| XIAO BLE + DWM3000EVB | Tag (0x0200) | — | UF2 flash |
 
----
+Use `nrfutil device list` to identify serial port assignments (they can change between reboots).
 
 ## Thread Network Credentials
 
@@ -50,193 +135,106 @@ All devices share these compiled-in credentials:
 | Extended PAN ID | `11:11:11:11:22:22:22:22` |
 | Network Name | UWBTracker |
 
----
+## UCI Device Configuration
+
+Devices use a binary UCI protocol over UART (not a text shell) for runtime configuration:
+
+```bash
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 info          # device info
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 status        # ranging status
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 start         # start ranging
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 stop          # stop ranging
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 set-interval 500  # change interval (ms)
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 save          # persist config to NVS
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 factory-reset # reset all settings
+```
+
+Configuration is persisted to NVS flash via `save`. See `firmware/ARCHITECTURE.md` for the full UCI command reference.
+
+## OTA Firmware Updates
+
+Firmware updates use MCUmgr SMP over UDP (anchor) or serial recovery (tag):
+
+```bash
+# Anchor: OTA over Thread IPv6
+./tools/scripts/ota_update.sh <device-ipv6-addr> firmware/build/nrf52840dk-nrf52840/firmware/zephyr/zephyr.signed.bin
+
+# Tag: serial recovery (hold P0.02 button during reset, then upload)
+mcumgr --conntype serial --connstring dev=/dev/ttyACM3,baud=115200 \
+    image upload firmware/build/decawave_dwm3001cdk/firmware/zephyr/zephyr.signed.bin
+```
+
+Bump `firmware/VERSION` before building update images.
 
 ## Project Structure
 
 ```
-capstone/
-├── firmware/               # Zephyr RTOS application (shared for all boards)
-│   ├── src/
-│   │   ├── main.c          # Entry point: init UWB + Thread, main loop
-│   │   ├── uwb_manager.c   # DW3000/DW3720 UWB ranging logic
-│   │   ├── uwb_manager.h
-│   │   ├── thread_coap.c   # Thread network + CoAP distance reporting
-│   │   └── thread_coap.h
-│   ├── boards/
-│   │   ├── nrf52840dk_nrf52840.conf     # Anchor: DW3000 chip, role=ANCHOR, addr=0x0001
-│   │   ├── nrf52840dk_nrf52840.overlay  # SPI/GPIO pin assignments for DWM3000EVB shield
-│   │   ├── decawave_dwm3001cdk.conf     # Tag: DW3720 chip, role=TAG, addr=0x0100
-│   │   └── decawave_dwm3001cdk.overlay  # Pin assignments for DWM3001CDK onboard UWB
-│   ├── prj.conf            # Base Kconfig: OpenThread FTD, CoAP, DW3000, logging
-│   ├── CMakeLists.txt
-│   ├── Kconfig
-│   ├── build.sh            # Build (and optionally flash) a specific board target
-│   └── build_multi.sh      # Build all targets in one go
+uwb-workspace/                  # West workspace root
+├── .west/                      # West metadata (created by west init)
+├── capstone/                   # ← this repository (manifest repo)
+│   ├── west.yml                # West manifest (nRF SDK v3.2.2 + DW3000 driver)
+│   ├── firmware/               # Zephyr RTOS application (shared for all boards)
+│   │   ├── src/
+│   │   │   ├── main.c          # Boot sequence + module init
+│   │   │   ├── uwb_manager.c/h    # DS-TWR ranging loop (interrupt-driven)
+│   │   │   ├── thread_coap.c/h    # Thread + CoAP distance/event reporting
+│   │   │   ├── device_config.c/h  # NVS-backed persistent configuration
+│   │   │   ├── uci.c/h            # UCI binary protocol parser + dispatch
+│   │   │   ├── uci_uart.c         # UCI UART transport (ISR RX → state machine)
+│   │   │   ├── uci_coap.c         # UCI CoAP transport (remote config)
+│   │   │   └── leds.h             # LED abstraction
+│   │   ├── boards/             # Per-board Kconfig + devicetree overlays
+│   │   ├── prj.conf            # Base Kconfig
+│   │   ├── CMakeLists.txt
+│   │   ├── build.sh            # Build script (auto-detects west workspace)
+│   │   ├── build_multi.sh      # Build all targets
+│   │   ├── VERSION             # Firmware version (for MCUboot signing)
+│   │   ├── ARCHITECTURE.md     # Detailed firmware architecture
+│   │   └── API_REFERENCE.md    # Non-standard API call catalog
+│   │
+│   └── tools/
+│       ├── monitor.py          # Live CoAP distance/event monitor
+│       ├── setup_host_tools.sh # Build OpenThread + install mcumgr
+│       ├── scripts/
+│       │   ├── uwb_tool.py         # UCI command-line tool
+│       │   ├── thread_dongle_setup.sh  # Thread network setup (run as root)
+│       │   └── ota_update.sh       # OTA firmware update helper
+│       └── server/
+│           ├── main.py         # CoAP server entry point
+│           ├── coap_server.py  # /distance resource handler
+│           ├── coap_receiver.py    # Standalone debug receiver
+│           ├── database.py     # SQLite storage layer
+│           └── requirements.txt
 │
-└── server/                 # Linux host — receives distance data from Thread mesh
-    ├── thread_setup.sh     # One-time Thread network configuration (run as root)
-    ├── coap_receiver.py    # Standalone CoAP debug receiver (console logging only)
-    ├── main.py             # Production CoAP server entry point
-    ├── coap_server.py      # CoAP /distance resource handler
-    ├── database.py         # SQLite storage layer
-    └── requirements.txt    # Python dependencies (aiocoap)
+├── zephyr/                     # ← fetched by west update
+├── nrf/                        # ← fetched by west update
+├── bootloader/mcuboot/         # ← fetched by west update
+├── modules/                    # ← fetched by west update
+└── zephyr-dw3000-decadriver/   # ← fetched by west update (DW3000 Zephyr driver)
 ```
-
----
-
-## File Descriptions
-
-### Firmware
-
-#### `firmware/prj.conf`
-The base Zephyr Kconfig for both board targets. Enables:
-- `CONFIG_OPENTHREAD_FTD` — Full Thread Device (can act as Router/Leader)
-- `CONFIG_COAP` / `CONFIG_COAP_UTILS` — CoAP messaging
-- `CONFIG_DW3000` — UWB radio driver
-- Thread network credentials (channel, PAN ID, network key)
-- Shell + OpenThread shell for UART debugging
-
-#### `firmware/boards/nrf52840dk_nrf52840.conf`
-Anchor-specific settings: selects the DW3000 chip variant, sets `NODE_ROLE_ANCHOR`, and assigns short address `0x0001`.
-
-#### `firmware/boards/nrf52840dk_nrf52840.overlay`
-Devicetree overlay for the DWM3000EVB Arduino shield on the nRF52840 DK:
-- Disables UART1 (frees pins used by the shield for SPI control)
-- Assigns DW3000 SPI chip-select (P1.12), IRQ (P1.10), RESET (P1.08), WAKEUP (P1.11)
-
-#### `firmware/boards/decawave_dwm3001cdk.conf`
-Tag-specific settings: selects the DW3720 chip variant, sets `NODE_ROLE_TAG`, and assigns short address `0x0100`.
-
-#### `firmware/src/thread_coap.c`
-Manages the OpenThread network connection and CoAP reporting:
-- Registers a Thread role-change callback — sets `thread_connected` when the device joins the mesh as Child, Router, or Leader
-- Queues distance measurements (up to 8 deep) and dispatches them on a dedicated work queue
-- Sends `POST /distance` to the multicast address `ff03::1` (all Thread nodes, realm-local scope) on port 5683
-- Payload: 12-byte little-endian struct — `anchor_id (u16)`, `tag_id (u16)`, `distance_mm (u32)`, `uptime_s (u32)`
-- Drops oldest measurement if queue is full (non-blocking)
-
-#### `firmware/build.sh`
-Convenience build script. Sets up the nRF Connect SDK toolchain environment variables and calls `west build` / `west flash`.
-
-```bash
-bash firmware/build.sh nrf52840dk/nrf52840 --flash          # build + flash anchor
-bash firmware/build.sh decawave_dwm3001cdk --flash          # build + flash tag
-bash firmware/build.sh nrf52840dk/nrf52840 --clean --flash  # clean rebuild
-```
-
----
-
-### Server
-
-#### `server/thread_setup.sh`
-**Run once as root** after plugging in the nRF USB dongle. Configures `ot-daemon` with the matching Thread credentials and starts the Linux host as Thread **Leader** (the network coordinator).
-
-```bash
-sudo bash server/thread_setup.sh
-```
-
-What it does:
-1. Stops any existing Thread session
-2. Programs channel, network key, PAN ID, extended PAN ID, and network name into the active dataset
-3. Brings up the `wpan0` TUN interface and starts the Thread stack
-4. Prints the assigned IPv6 addresses for confirmation
-
-The firmware devices (anchor + tag) will auto-attach to this network using their compiled-in matching credentials.
-
-#### `server/coap_receiver.py`
-A lightweight standalone CoAP server for **testing and debugging**. It:
-- Joins the `ff03::1` IPv6 multicast group on `wpan0` so it receives the anchor's multicast CoAP packets
-- Listens on `[::]:5683` for `POST /distance`
-- Decodes the 12-byte payload and logs each measurement to the console
-
-Use this to quickly verify the end-to-end data flow without a database:
-
-```bash
-python3 server/coap_receiver.py
-```
-
-Expected output when working:
-```
-21:05:55  INFO   Joined multicast ff03::1 on wpan0 (ifindex=8)
-21:05:55  INFO   CoAP server listening on [::]:5683 — waiting for distance data...
-21:08:12  INFO   [#1] anchor=0x0001  tag=0x0100  dist=1.234 m  uptime=17s  from=...
-```
-
-#### `server/main.py`
-The **production CoAP server**. Starts the same CoAP listener but stores every measurement in a SQLite database. Supports command-line arguments:
-
-```bash
-python3 server/main.py                          # defaults: :: port 5683, uwb_measurements.db
-python3 server/main.py --host :: --port 5683 --db /tmp/uwb.db
-```
-
-#### `server/coap_server.py`
-CoAP resource handler used by `main.py`. Implements the `/distance` resource:
-- Validates the 12-byte payload size
-- Decodes `anchor_id`, `tag_id`, `distance_mm`, `uptime_s`
-- Warns if distance is outside plausible UWB range (0.1 – 200 m)
-- Stores to SQLite via `database.insert_measurement()`
-
-#### `server/database.py`
-SQLite storage layer. Creates the `measurements` table on first run with:
-- `anchor_id`, `tag_id`, `distance_mm`, `node_uptime_s`, `received_at` (auto-timestamped)
-- A virtual `distance_m` column (millimetres ÷ 1000)
-- Indexes on `(anchor_id, tag_id)` and `received_at`
-- A `latest_distances` view for quick lookup of the most recent reading per anchor-tag pair
-
----
-
-## Quick Start
-
-### 1. Flash firmware
-```bash
-# Anchor (nRF52840 DK + DWM3000EVB shield)
-bash firmware/build.sh nrf52840dk/nrf52840 --flash
-
-# Tag (DWM3001CDK) — specify J-Link serial to target the right board
-cd ~/ncs/v3.2.2
-west flash --build-dir ~/Projects/capstone/firmware/build/decawave_dwm3001cdk --snr 760206311
-```
-
-### 2. Start Thread network on Linux host
-```bash
-sudo bash server/thread_setup.sh
-```
-
-### 3. Run the CoAP receiver
-For quick testing (console output only):
-```bash
-python3 server/coap_receiver.py
-```
-
-For production (stores to SQLite):
-```bash
-python3 server/main.py
-```
-
-### 4. Verify
-After ~10 seconds the firmware devices join the Thread mesh. The anchor starts ranging with the tag and sends `POST /distance` to `ff03::1:5683` every measurement cycle. The receiver logs each arriving measurement.
-
----
 
 ## Data Flow
 
 ```
 Tag ──UWB pulse──► Anchor
                     │
-                    ▼ (distance_mm computed via ToA)
+                    ▼ (distance_mm computed via DS-TWR)
               thread_coap_send_distance()
                     │
                     ▼ CoAP POST ff03::1:5683/distance
-              [anchor_id=0x0001][tag_id=0x0100]
-              [distance_mm: uint32][uptime_s: uint32]
+              [anchor_id: u16][tag_id: u16]
+              [distance_mm: u32][uptime_s: u32]
                     │  (12 bytes, little-endian)
                     ▼ Thread mesh → RCP dongle → wpan0
               Linux host (ot-daemon)
                     │
                     ▼
-           coap_receiver.py  (debug)
-                   OR
-           main.py → SQLite  (production)
+           monitor.py     (live console)
+                 OR
+           server/main.py → SQLite (production)
 ```
+
+## Further Documentation
+
+- **[firmware/ARCHITECTURE.md](firmware/ARCHITECTURE.md)** — boot sequence, thread/interrupt model, DS-TWR protocol, state machines, CoAP payloads, UCI commands, config system, OTA details
+- **[firmware/API_REFERENCE.md](firmware/API_REFERENCE.md)** — catalog of all non-standard API calls with SDK on-disk locations (DW3000 driver, OpenThread, nRF SDK, Zephyr subsystems)

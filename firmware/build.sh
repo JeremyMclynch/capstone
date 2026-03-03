@@ -33,10 +33,17 @@ BOARD="${1:-nrf52840dk/nrf52840}"
 DO_FLASH=false
 DO_CLEAN=false
 
-# Detect west workspace (west init -l . creates .west/)
+# Detect west workspace
+# T2 topology: .west/ is in the parent of the project root (standard west init -l)
+# Flat layout: .west/ is inside the project root (manual setup)
 USE_WORKSPACE=false
+WEST_TOPDIR=""
 if [ -d "${PROJECT_ROOT}/.west" ] && [ -f "${PROJECT_ROOT}/west.yml" ]; then
     USE_WORKSPACE=true
+    WEST_TOPDIR="${PROJECT_ROOT}"
+elif [ -d "$(dirname "${PROJECT_ROOT}")/.west" ] && [ -f "${PROJECT_ROOT}/west.yml" ]; then
+    USE_WORKSPACE=true
+    WEST_TOPDIR="$(dirname "${PROJECT_ROOT}")"
 fi
 
 # Parse flags
@@ -61,14 +68,17 @@ BUILD_DIR="${APP_DIR}/build/${BUILD_SUBDIR}"
 
 # Resolve west workspace or fallback SDK
 if [ "$USE_WORKSPACE" = true ]; then
-    WEST_DIR="${PROJECT_ROOT}"
+    WEST_DIR="${WEST_TOPDIR}"
 else
     SDK_DIR="${HOME}/ncs/v3.2.2"
     WEST_DIR="${SDK_DIR}"
     if [ ! -d "${SDK_DIR}" ]; then
-        echo "ERROR: nRF Connect SDK not found at ${SDK_DIR}"
-        echo "Either run 'west init -l . && west update' in the project root,"
-        echo "or install the SDK via nrfutil."
+        echo "ERROR: nRF Connect SDK not found."
+        echo "Set up a west workspace:"
+        echo "  mkdir workspace && cd workspace"
+        echo "  git clone <repo-url> capstone"
+        echo "  west init -l capstone && west update"
+        echo "Or install the SDK via nrfutil."
         exit 1
     fi
 fi
