@@ -11,7 +11,6 @@ Binary payload format (12 bytes, little-endian):
     8       4     uptime_s    (uint32, seconds since node boot)
 """
 
-import asyncio
 import logging
 import struct
 
@@ -23,7 +22,7 @@ from database import insert_measurement
 logger = logging.getLogger(__name__)
 
 # Payload struct: 2B anchor, 2B tag, 4B distance_mm, 4B uptime_s
-PAYLOAD_STRUCT = struct.Struct("<HHIi")
+PAYLOAD_STRUCT = struct.Struct("<HHII")
 PAYLOAD_SIZE   = PAYLOAD_STRUCT.size  # 12 bytes
 
 

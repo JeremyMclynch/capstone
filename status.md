@@ -12,7 +12,7 @@ _Last updated: 2026-03-02_
 - ~5 ranging cycles per second (200ms default interval, configurable at runtime via UCI)
 - 100% success rate, no dropped cycles
 - Distance accuracy ~±3cm at short range (limited by uncalibrated antenna delay)
-- DW3110 TXLED/RXLED active on both modules as visual indicators (via `dwt_setleds`)
+- DW3000/DW3720 TXLED/RXLED active on both modules as visual indicators (via `dwt_setleds`)
 - Runtime stop/start — ranging can be paused and resumed without reboot
 
 ### Thread Networking

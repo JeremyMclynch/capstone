@@ -29,12 +29,6 @@ config UWB_NODE_SHORT_ADDR
       Must be unique across all anchors and tags in the network.
       Anchors: 0x0001-0x00FF, Tags: 0x0100-0xFFFE (convention).
 
-config UWB_PAN_ID
-    hex "UWB PAN ID"
-    default 0xDECA
-    help
-      IEEE 802.15.4 PAN ID for the UWB ranging network.
-
 config UWB_RANGING_INTERVAL_MS
     int "Ranging interval in milliseconds"
     default 1000
@@ -43,19 +37,6 @@ config UWB_RANGING_INTERVAL_MS
       Time between successive ranging cycles. For tags, this is the
       delay between completing one full sweep of all anchors and
       starting the next.
-
-config UWB_TX_ANTENNA_DELAY
-    int "TX antenna delay (DWT time units)"
-    default 16385
-    help
-      TX antenna delay calibration value. Should be calibrated per
-      device for best accuracy.
-
-config UWB_RX_ANTENNA_DELAY
-    int "RX antenna delay (DWT time units)"
-    default 16385
-    help
-      RX antenna delay calibration value.
 
 config COAP_SERVER_ADDR
     string "CoAP server IPv6 address"

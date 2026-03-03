@@ -13,10 +13,6 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [[ -x "${PROJECT_ROOT}/tools/openthread/ot-daemon" ]]; then
     OT_DAEMON="${PROJECT_ROOT}/tools/openthread/ot-daemon"
     OT_CTL="${PROJECT_ROOT}/tools/openthread/ot-ctl"
-elif [[ -x "/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-daemon" ]]; then
-    # Legacy fallback
-    OT_DAEMON="/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-daemon"
-    OT_CTL="/home/jeremy/Projects/openthread/src/openthread/build/posix/src/posix/ot-ctl"
 else
     echo "ERROR: ot-daemon not found. Run: bash tools/setup_host_tools.sh" >&2
     exit 1
