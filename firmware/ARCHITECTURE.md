@@ -1201,11 +1201,19 @@ Install the mcumgr CLI: `go install github.com/apache/mynewt-mcumgr-cli/mcumgr@l
 
 ### Address Conventions
 
-| Address Range | Role | Example |
-|---------------|------|---------|
-| `0x0001`–`0x00FF` | Anchors | `0x0001` = first anchor |
-| `0x0100`–`0xFFFE` | Tags | `0x0100` = first tag |
-| `0x0000`, `0xFFFF` | Reserved | Cannot be assigned |
+UWB addresses are **automatically derived** from each device's hardware ID at boot — no manual assignment needed.
+
+**How it works:** `derive_addr_from_device_id()` in `device_config.c` reads the nRF FICR DEVICEID registers (64-bit unique hardware ID), XOR-folds them to 16 bits, and clamps the result to `[0x0100, 0xFFFE]`.
+
+| Address | Meaning |
+|---------|---------|
+| `0x0000` | Reserved (not assigned) |
+| `0x0100`–`0xFFFE` | All devices (anchors and tags) |
+| `0xFFFF` | Reserved (broadcast) |
+
+- Role (anchor/tag) is independent of address — set via Kconfig board defaults or overridden at runtime via UCI + NVS
+- Addresses can be manually overridden: `uwb_tool.py <port> set-addr 0x1234` + `save`
+- Discovery and ranging work with any address in the valid range
 
 ---
 
