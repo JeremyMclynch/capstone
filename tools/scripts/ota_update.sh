@@ -42,18 +42,28 @@ echo "Uploading firmware image..."
 mcumgr --conntype udp --connstring="${CONNSTRING}" image upload "$IMAGE"
 echo ""
 
-# 2. List images to verify upload
+# 2. List images to verify upload and get slot 1 hash
 echo "Verifying uploaded images..."
-mcumgr --conntype udp --connstring="${CONNSTRING}" image list
+IMAGE_LIST=$(mcumgr --conntype udp --connstring="${CONNSTRING}" image list)
+echo "$IMAGE_LIST"
 echo ""
 
-# 3. Reset device to boot into new image
+# 3. Parse slot 1 hash and mark for test
+SLOT1_HASH=$(echo "$IMAGE_LIST" | awk '/slot=1/{found=1} found && /hash:/{print $2; exit}')
+if [[ -z "$SLOT1_HASH" ]]; then
+    die "Could not find slot 1 image hash"
+fi
+echo "Marking slot 1 for test (hash: ${SLOT1_HASH})..."
+mcumgr --conntype udp --connstring="${CONNSTRING}" image test "$SLOT1_HASH"
+echo ""
+
+# 4. Reset device to boot into new image
 echo "Resetting device..."
 mcumgr --conntype udp --connstring="${CONNSTRING}" reset || true
 echo ""
 
 echo "=== OTA update complete ==="
-echo "Device is rebooting with the new firmware."
+echo "Device is rebooting into the new firmware (test mode)."
 echo ""
-echo "For dual-slot devices (anchor), the new image is pending test."
-echo "To confirm permanently:  mcumgr --conntype udp --connstring=${CONNSTRING} image confirm"
+echo "After verifying, confirm permanently:"
+echo "  mcumgr --conntype udp --connstring=${CONNSTRING} image confirm \$(mcumgr --conntype udp --connstring=${CONNSTRING} image list | awk '/slot=0/{f=1} f&&/hash:/{print \$2;exit}')"

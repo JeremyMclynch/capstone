@@ -6,11 +6,15 @@
  *
  * CoAP resource: POST /distance
  *
- * Binary payload (12 bytes, little-endian):
- *   [0-1]  anchor_id   (uint16_t)
- *   [2-3]  tag_id      (uint16_t)
- *   [4-7]  distance_mm (uint32_t, millimeters)
- *   [8-11] uptime_s    (uint32_t, seconds since boot)
+ * Binary payload (20 bytes, little-endian):
+ *   [0-1]   anchor_id    (uint16_t)
+ *   [2-3]   tag_id       (uint16_t)
+ *   [4-7]   distance_mm  (uint32_t, millimeters)
+ *   [8-11]  uptime_s     (uint32_t, seconds since boot)
+ *   [12-13] rssi_q8      (int16_t, channel RSSI in Q8.8 dBm)
+ *   [14-15] fp_power_q8  (int16_t, first-path power in Q8.8 dBm)
+ *   [16-17] fp_index     (uint16_t, first-path CIR index, Q10.6)
+ *   [18-19] peak_index   (uint16_t, peak CIR sample index)
  */
 
 #include <zephyr/kernel.h>
@@ -29,6 +33,7 @@ LOG_MODULE_REGISTER(thread_coap, LOG_LEVEL_INF);
 /* CoAP resource path components */
 static const char *const distance_uri[] = { "distance", NULL };
 static const char *const event_uri[]    = { "event",    NULL };
+static const char *const cir_uri[]      = { "cir",      NULL };
 
 /* Server address (parsed from CONFIG_COAP_SERVER_ADDR at init) */
 static struct sockaddr_in6 server_addr = {
@@ -69,8 +74,26 @@ struct uwb_event_msg {
 K_MSGQ_DEFINE(evt_queue, sizeof(struct uwb_event_msg),
               EVT_QUEUE_DEPTH, 4);
 
+/* CIR capture payload: 20-byte header + 192 bytes of I/Q data */
+#define CIR_NUM_SAMPLES 48
+
+struct cir_measurement {
+    uint16_t anchor_id;
+    uint16_t tag_id;
+    uint32_t distance_mm;
+    uint16_t fp_index;
+    uint16_t sample_offset;
+    uint8_t  num_samples;
+    uint32_t cir_data[CIR_NUM_SAMPLES];
+};
+
+#define CIR_QUEUE_DEPTH 2
+K_MSGQ_DEFINE(cir_queue, sizeof(struct cir_measurement),
+              CIR_QUEUE_DEPTH, 4);
+
 static struct k_work send_work;
 static struct k_work send_evt_work;
+static struct k_work send_cir_work;
 static bool thread_connected = false;
 
 /* ── Binary payload encoding ─────────────────────────────────────── */
@@ -97,6 +120,31 @@ struct __packed event_payload {
     uint8_t  event;
     uint8_t  seq;
     uint16_t reserved;
+};
+
+/* CIR payload (212 bytes, little-endian):
+ *   [0-1]   anchor_id      (uint16)
+ *   [2-3]   tag_id         (uint16)
+ *   [4-7]   distance_mm    (uint32)
+ *   [8-11]  uptime_s       (uint32)
+ *   [12-13] fp_index       (uint16, Q10.6)
+ *   [14-15] sample_offset  (uint16)
+ *   [16]    num_samples    (uint8)
+ *   [17]    read_mode      (uint8) — DWT_CIR_READ_HI=3
+ *   [18-19] reserved       (uint16)
+ *   [20..] cir_data        (num_samples × 4 bytes: int16 real + int16 imag)
+ */
+struct __packed cir_payload {
+    uint16_t anchor_id;
+    uint16_t tag_id;
+    uint32_t distance_mm;
+    uint32_t uptime_s;
+    uint16_t fp_index;
+    uint16_t sample_offset;
+    uint8_t  num_samples;
+    uint8_t  read_mode;
+    uint16_t reserved;
+    uint32_t cir_data[CIR_NUM_SAMPLES];
 };
 
 /* ── CoAP send work handler ──────────────────────────────────────── */
@@ -126,10 +174,10 @@ static void coap_send_work_handler(struct k_work *work)
                                     sizeof(payload),
                                     NULL);
         if (ret < 0) {
-            LOG_WRN("CoAP POST failed: %d", ret);
+            LOG_WRN("CoAP POST /distance failed: %d", ret);
         } else {
-            LOG_DBG("Posted: anchor=0x%04X tag=0x%04X dist=%.3f m",
-                    meas.anchor_id, meas.tag_id, (double)meas.distance_m);
+            LOG_INF("CoAP POST /distance OK (ret=%d, %u bytes)",
+                    ret, (unsigned)sizeof(payload));
         }
     }
 }
@@ -158,6 +206,44 @@ static void coap_send_evt_work_handler(struct k_work *work)
                                     NULL);
         if (ret < 0) {
             LOG_WRN("Event CoAP POST failed: %d", ret);
+        }
+    }
+}
+
+/* ── CoAP CIR send work handler ────────────────────────────────── */
+
+static void coap_send_cir_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+
+    struct cir_measurement meas;
+
+    while (k_msgq_get(&cir_queue, &meas, K_NO_WAIT) == 0) {
+        struct cir_payload payload = {
+            .anchor_id     = meas.anchor_id,
+            .tag_id        = meas.tag_id,
+            .distance_mm   = meas.distance_mm,
+            .uptime_s      = (uint32_t)(k_uptime_get() / 1000),
+            .fp_index      = meas.fp_index,
+            .sample_offset = meas.sample_offset,
+            .num_samples   = meas.num_samples,
+            .read_mode     = 3,  /* DWT_CIR_READ_HI */
+            .reserved      = 0,
+        };
+        memcpy(payload.cir_data, meas.cir_data,
+               meas.num_samples * sizeof(uint32_t));
+
+        int ret = coap_send_request(COAP_METHOD_POST,
+                                    (const struct sockaddr *)&server_addr,
+                                    cir_uri,
+                                    (const uint8_t *)&payload,
+                                    sizeof(payload),
+                                    NULL);
+        if (ret < 0) {
+            LOG_WRN("CIR CoAP POST failed: %d", ret);
+        } else {
+            LOG_DBG("CIR posted: %u samples @ offset %u",
+                    meas.num_samples, meas.sample_offset);
         }
     }
 }
@@ -219,6 +305,7 @@ int thread_coap_init(void)
 
     k_work_init(&send_work,     coap_send_work_handler);
     k_work_init(&send_evt_work, coap_send_evt_work_handler);
+    k_work_init(&send_cir_work, coap_send_cir_work_handler);
 
     /* Register Thread state change callback and start the stack */
     openthread_state_changed_callback_register(&ot_state_cb);
@@ -266,6 +353,7 @@ void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
                                 uint16_t fp_index, uint16_t peak_index)
 {
     if (!thread_connected) {
+        LOG_WRN("Distance dropped: Thread not connected");
         return;
     }
 
@@ -287,5 +375,34 @@ void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
         k_msgq_put(&meas_queue, &meas, K_NO_WAIT);
     }
 
+    LOG_INF("Queued dist: anchor=0x%04X tag=0x%04X %.3fm",
+            anchor_id, tag_id, (double)distance_m);
     k_work_submit_to_queue(&coap_workq, &send_work);
+}
+
+void thread_coap_send_cir(uint16_t anchor_id, uint16_t tag_id,
+                           uint32_t distance_mm,
+                           uint16_t fp_index, uint16_t sample_offset,
+                           const uint32_t *cir_data, uint8_t num_samples)
+{
+    if (!thread_connected) {
+        return;
+    }
+
+    struct cir_measurement meas = {
+        .anchor_id     = anchor_id,
+        .tag_id        = tag_id,
+        .distance_mm   = distance_mm,
+        .fp_index      = fp_index,
+        .sample_offset = sample_offset,
+        .num_samples   = num_samples,
+    };
+    memcpy(meas.cir_data, cir_data, num_samples * sizeof(uint32_t));
+
+    /* Drop if queue full — CIR is best-effort */
+    if (k_msgq_put(&cir_queue, &meas, K_NO_WAIT) != 0) {
+        LOG_WRN("CIR queue full, dropping");
+    }
+
+    k_work_submit_to_queue(&coap_workq, &send_cir_work);
 }

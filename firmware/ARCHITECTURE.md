@@ -186,9 +186,11 @@ All frames use IEEE 802.15.4 short format with PAN ID `0xDECA`:
 
 | Frame | Bytes | Function Code | Extra Fields |
 |-------|-------|---------------|--------------|
-| POLL | 12 | `0x21` | `[10-11]` tag source address (LE uint16) |
+| POLL | 14 | `0x21` | `[10-11]` dest anchor addr, `[12-13]` tag source addr (LE uint16) |
 | RESP | 14 | `0x10` | — |
-| FINAL | 22 | `0x23` | `[10-13]` poll_tx_ts, `[14-17]` resp_rx_ts, `[18-21]` final_tx_ts (LE uint32 each, truncated from 40-bit) |
+| FINAL | 26 | `0x23` | `[10-11]` dest, `[12-13]` src, `[14-17]` poll_tx_ts, `[18-21]` resp_rx_ts, `[22-25]` final_tx_ts (LE uint32 each) |
+| DISC_POLL | 14 | `0x24` | `[10-11]` dest=`0xFFFF` (broadcast), `[12-13]` tag source addr |
+| DISC_RESP | 14 | `0x25` | `[12-13]` anchor source addr |
 
 Common header (bytes 0–9): `[0x41, 0x88, seq, 0xCA, 0xDE, dst[0..3], fc]`
 
@@ -216,6 +218,82 @@ Common header (bytes 0–9): `[0x41, 0x88, seq, 0xCA, 0xDE, dst[0..3], fc]`
 
 ---
 
+## Multi-Anchor Discovery Protocol
+
+When multiple anchors are present, the tag must discover them and range each one sequentially to avoid UWB interference from simultaneous responses.
+
+### Discovery Sequence
+
+```
+     Tag                                    Anchor A (slot 1)        Anchor B (slot 3)
+     ───                                    ─────────────────        ─────────────────
+
+  DISC_POLL TX ──────────────────────►  RX (fc=0x24)            RX (fc=0x24)
+  (fc=0x24, dst=0xFFFF broadcast)        │                        │
+  │                                      ├─ slot = addr % 8       ├─ slot = addr % 8
+  │                                      ├─ delay = 3500          ├─ delay = 3500
+  │                                      │  + slot×5000 µs        │  + slot×5000 µs
+  │                                      ▼                        │
+  │  DISC_RESP RX ◄──────────────────  DISC_RESP TX (delayed)     │
+  │  (fc=0x25, anchor_addr)             + CoAP event DISC_RX      │
+  │   ├─ add/update peer_list                                     ▼
+  │   ├─ read RSSI, FP power                                    DISC_RESP TX (delayed)
+  │   │                                                          + CoAP event DISC_RX
+  │  DISC_RESP RX ◄─────────────────────────────────────────── (fc=0x25, anchor_addr)
+  │   ├─ add/update peer_list
+  │   ├─ read RSSI, FP power
+  │
+  └─ Listen window closes (45 ms total)
+     Discovery complete: peer_list updated
+```
+
+### Time-Slot Anti-Collision
+
+Each anchor computes its response slot from its UWB short address to avoid overlapping transmissions:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `DISC_NUM_SLOTS` | 8 | Number of time slots per discovery round |
+| `DISC_BASE_DELAY_UUS` | 3500 µs | Minimum delay before first slot |
+| `DISC_SLOT_DURATION_UUS` | 5000 µs | Duration of each slot |
+| `DISC_WINDOW_MS` | 45 ms | Tag listen window (covers all 8 slots) |
+
+Slot assignment: `slot = uwb_addr % DISC_NUM_SLOTS`
+Response delay: `3500 + slot × 5000` µs after receiving the discovery poll.
+
+**Implementation notes:**
+- The tag continues listening (`continue`) on RX timeouts/errors between anchor responses, not breaking out of the listen loop until the full 45ms window expires
+- Anchors use `k_sched_lock()` around the timing-critical `dwt_setdelayedtrxtime` → `dwt_starttx` sequence to prevent thread preemption
+- The anchor's TX confirmation wait timeout scales with slot delay (`slot_delay_ms + 10ms`) since later slots (e.g. slot 5 = 28.5ms) transmit well after 10ms
+
+### Peer Management
+
+The tag maintains a peer list (`struct uwb_peer`, max `UWB_MAX_ANCHORS=8` entries):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `addr` | uint16 | Anchor UWB short address (0 = empty slot) |
+| `rssi_q8` | int16 | Last RSSI from discovery/ranging (Q8.8 dBm) |
+| `fp_power_q8` | int16 | Last first-path power (Q8.8 dBm) |
+| `miss_count` | uint8 | Consecutive ranging failures |
+| `flags` | uint8 | `0x01`=discovered, `0x02`=manually added |
+
+- Peers are added during discovery (flag `DISCOVERED`) or manually via UCI `add-peer` command (flag `MANUAL`)
+- After each ranging cycle, `miss_count` is reset on success or incremented on failure
+- Peers with `miss_count > UWB_PEER_MISS_THRESHOLD (3)` are pruned automatically
+- Discovery runs periodically every `discovery_interval` ranging cycles, or on-demand via UCI `discover` command
+
+### Directed Ranging
+
+After discovery, the tag ranges each peer sequentially using directed POLL frames:
+
+- POLL `dest_addr` is set to the specific anchor's address (bytes 10-11)
+- Anchors filter incoming POLLs: only respond if `dest_addr` matches their own address or is broadcast (`0xFFFF`)
+- This prevents multiple anchors from responding simultaneously, which caused UWB interference
+- A brief 5ms gap (`k_sleep(K_MSEC(5))`) separates ranging cycles to different anchors
+
+---
+
 ## Anchor State Machine
 
 ```
@@ -239,36 +317,48 @@ Common header (bytes 0–9): `[0x41, 0x88, seq, 0xCA, 0xDE, dst[0..3], fc]`
        │            │   no timeout) │               │      │
        │            └───────┬───────┘               │      │
        │                    │ EVT_RX_OK             │      │
-       │                    │ + valid POLL frame     │      │
-       │                    ▼                       │      │
-       │            ┌───────────────┐    DWT_ERROR  │      │
-       │            │  SEND RESP    ├───────────────┘      │
-       │            │  (delayed TX, │                      │
-       │            │   sched_lock) │                      │
-       │            └───────┬───────┘                      │
-       │                    │ EVT_TX_DONE                  │
-       │                    ▼                              │
-       │            ┌───────────────┐    EVT_RX_TO/ERR     │
-       │            │  WAIT FINAL   ├──────────────────────┘
-       │            │  (5000 µs     │
-       │            │   timeout)    │
-       │            └───────┬───────┘
-       │                    │ EVT_RX_OK
-       │                    │ + valid FINAL frame
-       │                    ▼
-       │            ┌───────────────┐
-       │            │   COMPUTE     │
-       │            │   DISTANCE    │
-       │            │               │
-       │            │  Ra,Rb,Da,Db  │
-       │            │  → ToF → m   │
-       │            └───────┬───────┘
-       │                    │
-       │                    │ distance_cb()
-       │                    │   └─ blink LED2
-       │                    │   └─ thread_coap_send_distance()
-       │                    │
-       └────────────────────┘   (loop back to WAIT POLL)
+       │                    │ + valid frame          │      │
+       │                    │                       │      │
+       │              ┌─────┴─────┐                 │      │
+       │              │ fc check  │                 │      │
+       │              └─┬───────┬─┘                 │      │
+       │          fc=0x24│     │fc=0x21              │      │
+       │         (disc)  │     │(ranging)            │      │
+       │                 ▼     │                    │      │
+       │  ┌────────────────┐   │  + dest_addr check │      │
+       │  │ SEND DISC RESP │   │  (must match own   │      │
+       │  │ (slot-delayed  │   │   addr or 0xFFFF)  │      │
+       │  │  TX, sched_lock│   │                    │      │
+       │  │  around TX)    │   ▼                    │      │
+       │  └───────┬────────┤  ┌───────────────┐ DWT_ERROR  │
+       │          │        │  │  SEND RESP    ├─────┘      │
+       │  wait slot_delay  │  │  (delayed TX, │            │
+       │  + 10ms for       │  │   sched_lock) │            │
+       │  EVT_TX_DONE      │  └───────┬───────┘            │
+       │          │        │          │ EVT_TX_DONE        │
+       │   send_event(     │                               │
+       │    DISC_RX)       │                               │
+       │          │        │          ▼                    │
+       │          │        │  ┌───────────────┐ EVT_RX_TO/ERR
+       │          │        │  │  WAIT FINAL   ├────────────┘
+       │          │        │  │  (5000 µs     │
+       │          │        │  │   timeout)    │
+       │          │        │  └───────┬───────┘
+       │          │        │          │ EVT_RX_OK
+       │          │        │          │ + valid FINAL frame
+       │          │        │          ▼
+       │          │        │  ┌───────────────┐
+       │          │        │  │   COMPUTE     │
+       │          │        │  │   DISTANCE    │
+       │          │        │  │  Ra,Rb,Da,Db  │
+       │          │        │  │  → ToF → m   │
+       │          │        │  └───────┬───────┘
+       │          │        │          │
+       │          │        │          │ distance_cb()
+       │          │        │          │   └─ blink LED2
+       │          │        │          │   └─ send_distance()
+       │          │        │          │
+       └──────────┴────────┴──────────┘   (loop back to WAIT POLL)
 ```
 
 ---
@@ -276,56 +366,76 @@ Common header (bytes 0–9): `[0x41, 0x88, seq, 0xCA, 0xDE, dst[0..3], fc]`
 ## Tag State Machine
 
 ```
-                            ┌──────────────────────────────┐
-                            │                              │
-                     uwb_running=0                  uwb_running=0
-                            │                              │
-                            ▼                              │
-                      ┌───────────┐                        │
-       ┌──────────────│   IDLE    │◄────────────────┐      │
-       │              └─────┬─────┘                 │      │
-       │               uwb_running=1                │      │
-       │                    │                       │      │
-       │          drain_semaphores()                 │      │
-       │          clear DW3000 status                │      │
-       │                    │                       │      │
-       │                    ▼                       │      │
-       │            ┌───────────────┐               │      │
-       │            │  SEND POLL    │               │      │
-       │            │  (immediate   │               │      │
-       │            │   TX + arm RX)│               │      │
-       │            └───────┬───────┘               │      │
-       │                    │ EVT_TX_DONE           │      │
-       │                    ▼                       │      │
-       │            ┌───────────────┐   EVT_RX_TO/ERR     │
-       │            │  WAIT RESP    ├──────────────────┐   │
-       │            │  (1000 µs     │                  │   │
-       │            │   timeout)    │                  │   │
-       │            └───────┬───────┘                  │   │
-       │                    │ EVT_RX_OK                │   │
-       │                    │ + valid RESP frame        │   │
-       │                    ▼                          │   │
-       │            ┌───────────────┐   DWT_ERROR      │   │
-       │            │  SEND FINAL   ├────────────┐     │   │
-       │            │  (delayed TX, │            │     │   │
-       │            │   sched_lock, │            │     │   │
-       │            │   3 timestamps│            │     │   │
-       │            │   in payload) │            │     │   │
-       │            └───────┬───────┘            │     │   │
-       │                    │ EVT_TX_DONE        │     │   │
-       │                    ▼                    ▼     ▼   │
-       │            ┌───────────────┐    ┌────────────┐    │
-       │            │  CYCLE DONE   │    │   SLEEP    │    │
-       │            │  range_count++│    │ interval_ms│    │
-       │            └───────┬───────┘    └─────┬──────┘    │
-       │                    │                  │           │
-       │                    └──────┬───────────┘           │
-       │                           │                       │
-       │                    k_sleep(ranging_interval_ms)    │
-       │                           │                       │
-       └───────────────────────────┘                       │
-                                                           │
-              (tag also sends CoAP events at each step ────┘
+                            ┌──────────────────────────────────────────┐
+                            │                                          │
+                     uwb_running=0                              uwb_running=0
+                            │                                          │
+                            ▼                                          │
+                      ┌───────────┐                                    │
+       ┌──────────────│   IDLE    │◄──────────────────────────┐        │
+       │              └─────┬─────┘                           │        │
+       │               uwb_running=1                          │        │
+       │                    │                                 │        │
+       │          drain_semaphores()                           │        │
+       │          clear DW3000 status                          │        │
+       │                    │                                 │        │
+       │                    ▼                                 │        │
+       │         ┌────────────────────┐                       │        │
+       │         │  DISCOVERY CHECK   │                       │        │
+       │         │  (cycle_counter %  │                       │        │
+       │         │   disc_interval)   │                       │        │
+       │         └──┬─────────────┬───┘                       │        │
+       │      due   │             │ not due                   │        │
+       │            ▼             │                           │        │
+       │   ┌──────────────────┐   │                           │        │
+       │   │  DISCOVERY       │   │                           │        │
+       │   │  TX DISC_POLL    │   │                           │        │
+       │   │  (fc=0x24,       │   │                           │        │
+       │   │   dst=0xFFFF)    │   │                           │        │
+       │   │  Listen 45ms     │   │                           │        │
+       │   │  Collect resps   │   │                           │        │
+       │   │  Update peers    │   │                           │        │
+       │   └────────┬─────────┘   │                           │        │
+       │            │             │                           │        │
+       │            ▼             ▼                           │        │
+       │     ┌──────────────────────┐                         │        │
+       │     │  FOR EACH PEER       │ ◄──────────┐            │        │
+       │     │  (sequential ranging) │            │            │        │
+       │     └──────────┬───────────┘            │            │        │
+       │                │                        │            │        │
+       │                ▼                        │            │        │
+       │        ┌───────────────┐                │            │        │
+       │        │  SEND POLL    │                │            │        │
+       │        │  (directed to │                │            │        │
+       │        │   peer addr)  │                │            │        │
+       │        └───────┬───────┘                │            │        │
+       │                │ EVT_TX_DONE            │            │        │
+       │                ▼                        │            │        │
+       │        ┌───────────────┐  EVT_RX_TO     │            │        │
+       │        │  WAIT RESP    ├─── miss++ ─────┤            │        │
+       │        │  (1000 µs)    │                │            │        │
+       │        └───────┬───────┘                │            │        │
+       │                │ EVT_RX_OK              │            │        │
+       │                ▼                        │            │        │
+       │        ┌───────────────┐  DWT_ERROR     │            │        │
+       │        │  SEND FINAL   ├────────────────┤            │        │
+       │        └───────┬───────┘                │            │        │
+       │                │ EVT_TX_DONE            │            │        │
+       │                │ miss=0, range_count++  │            │        │
+       │                │ k_sleep(5ms)           │            │        │
+       │                │                        │            │        │
+       │                └─── next peer ──────────┘            │        │
+       │                                                      │        │
+       │              (all peers done)                         │        │
+       │                │                                     │        │
+       │          prune_peers()                                │        │
+       │          (miss_count > 3 → remove)                    │        │
+       │                │                                     │        │
+       │          k_sleep(ranging_interval_ms)                 │        │
+       │                │                                     │        │
+       └────────────────┘                                     │        │
+                                                              │        │
+              (tag sends CoAP events at each DS-TWR step ─────┘────────┘
                via thread_coap_send_event())
 ```
 
@@ -408,6 +518,16 @@ uwb_manager: initiator_loop()
                └─ while (k_msgq_get): coap_send_request(POST /event, payload)
 ```
 
+### Data Flow (Anchor → Server, Discovery Event)
+
+```
+uwb_manager: handle_discovery_poll()
+  │
+  └─ thread_coap_send_event(anchor_addr, UWB_EVT_DISC_RX, seq)
+       │  (sent after successful discovery response TX)
+       └─ same event queue + work handler as tag events
+```
+
 ### Payload Formats
 
 **POST /distance** — 20 bytes, little-endian (12-byte legacy also accepted by server):
@@ -428,7 +548,7 @@ uwb_manager: initiator_loop()
 | Offset | Size | Field | Description |
 |--------|------|-------|-------------|
 | 0 | 2 | `node_id` | Reporting node UWB short address |
-| 2 | 1 | `event` | `0x01`=POLL_TX, `0x02`=RESP_RX, `0x03`=FINAL_TX, `0x10`=NO_RESP |
+| 2 | 1 | `event` | `0x01`=POLL_TX, `0x02`=RESP_RX, `0x03`=FINAL_TX, `0x10`=NO_RESP, `0x20`=DISC_RX |
 | 3 | 1 | `seq` | Frame sequence number |
 | 4 | 2 | `reserved` | Zero |
 

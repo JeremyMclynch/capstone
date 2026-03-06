@@ -21,12 +21,13 @@ import struct
 import aiocoap
 import aiocoap.resource as resource
 
-from database import insert_measurement
+from database import insert_measurement, insert_cir_capture
 
 logger = logging.getLogger(__name__)
 
 PAYLOAD_V2 = struct.Struct("<HHIIhhHH")  # 20 bytes
 PAYLOAD_V1 = struct.Struct("<HHII")       # 12 bytes (legacy)
+CIR_HEADER = struct.Struct("<HHIIHHBBxx")  # 20-byte CIR header
 
 
 class DistanceResource(resource.Resource):
@@ -87,8 +88,59 @@ class DistanceResource(resource.Resource):
         return aiocoap.Message(code=aiocoap.CHANGED)
 
 
+class CIRResource(resource.Resource):
+    """CoAP resource at /cir - accepts POST with CIR data payload."""
+
+    async def render_post(self, request: aiocoap.Message) -> aiocoap.Message:
+        payload = request.payload
+
+        if len(payload) < CIR_HEADER.size:
+            logger.warning("CIR payload too short: %d bytes", len(payload))
+            return aiocoap.Message(
+                code=aiocoap.BAD_REQUEST,
+                payload=b"Bad CIR payload size",
+            )
+
+        (anchor_id, tag_id, distance_mm, uptime_s,
+         fp_index, sample_offset, num_samples, read_mode) = CIR_HEADER.unpack(
+            payload[:CIR_HEADER.size])
+
+        cir_data = payload[CIR_HEADER.size:]
+        expected_size = num_samples * 4
+        if len(cir_data) < expected_size:
+            logger.warning(
+                "CIR data truncated: got %d bytes, expected %d",
+                len(cir_data), expected_size,
+            )
+            return aiocoap.Message(
+                code=aiocoap.BAD_REQUEST,
+                payload=b"CIR data truncated",
+            )
+
+        logger.info(
+            "CIR: anchor=0x%04X tag=0x%04X %d samples @ offset=%d dist=%.3f m",
+            anchor_id, tag_id, num_samples, sample_offset,
+            distance_mm / 1000.0,
+        )
+
+        rowid = insert_cir_capture(
+            anchor_id=anchor_id,
+            tag_id=tag_id,
+            distance_mm=distance_mm,
+            fp_index=fp_index,
+            sample_offset=sample_offset,
+            num_samples=num_samples,
+            read_mode=read_mode,
+            cir_data=cir_data[:expected_size],
+        )
+        logger.debug("Stored CIR capture id=%d", rowid)
+
+        return aiocoap.Message(code=aiocoap.CHANGED)
+
+
 def build_site() -> resource.Site:
     """Create and return the CoAP resource tree."""
     site = resource.Site()
     site.add_resource(["distance"], DistanceResource())
+    site.add_resource(["cir"], CIRResource())
     return site

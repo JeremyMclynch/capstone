@@ -52,17 +52,25 @@ west flash --build-dir ~/Projects/capstone/firmware/build/nrf52840dk-nrf52840 --
 west flash --build-dir ~/Projects/capstone/firmware/build/decawave_dwm3001cdk --dev-id 760206311    # tag
 ```
 
+**Flash with nrfutil** (works reliably with multiple boards):
+```bash
+nrfutil device program --firmware ~/Projects/capstone/firmware/build/nrf52840dk-nrf52840/merged.hex --serial-number 1050222631 --options chip_erase_mode=ERASE_ALL
+nrfutil device program --firmware ~/Projects/capstone/firmware/build/decawave_dwm3001cdk/merged.hex --serial-number 760206311 --options chip_erase_mode=ERASE_ALL
+```
+
 Board targets must include the SoC qualifier: `nrf52840dk/nrf52840` not `nrf52840dk`.
 
 ## Hardware
 
 Use `nrfutil device list` to identify serial port assignments (they can change between reboots).
 
-| Device | Role | Serial/dev-id | UART |
-|---|---|---|---|
-| nRF52840 DK + DWM3000EVB | Anchor (DS-TWR responder) | 1050222631 | /dev/ttyACM1 |
-| DWM3001CDK | Tag (DS-TWR initiator) | 760206311 | /dev/ttyACM3 |
-| nRF52840 USB Dongle | Thread RCP | — | /dev/ttyACM0 |
+| Device | Role | Serial/dev-id | UART | Thread IPv6 (mesh-local) | UWB Addr |
+|---|---|---|---|---|---|
+| nRF52840 DK + DWM3000EVB | Anchor | 1050222631 | /dev/ttyACM1 | `fdb6:8266:ea22:f1e0:b34:61f6:812c:46f5` | 0x0AC8 |
+| DWM3001CDK | Tag | 760206311 | /dev/ttyACM3 | — | auto |
+| XIAO BLE #1 | Anchor | — (J-Link via DK) | — | discovered via `ot-ctl eidcache` | auto |
+| XIAO BLE #2 | Anchor | — (J-Link via DK) | — | discovered via `ot-ctl eidcache` | auto |
+| nRF52840 USB Dongle | Thread RCP | — | /dev/ttyACM0 | — | — |
 
 **Remote reset via J-Link** (no physical button press needed):
 ```bash
@@ -72,7 +80,19 @@ nrfutil device reset --serial-number 760206311    # reset tag (CDK)
 
 ### XIAO BLE
 
-Board target: `xiao_ble`. App-only build (no MCUboot, uses `--no-sysbuild`). Default address 0x0200. Flash via UF2 drag-and-drop: double-tap RST, drag `zephyr.uf2` to the USB drive. DK library works for LEDs (3 RGB LEDs, no buttons). Board conf disables MCUmgr/IMG_MANAGER/RETENTION_BOOT_MODE.
+Board target: `xiao_ble`. Default address 0x0200. MCUboot dual-slot with OTA over Thread (same as anchor). DK library works for LEDs (3 RGB LEDs, no buttons).
+
+**Flashing**: Uses nRF52840 DK's J-Link Debug Out (SWD) — `nrfutil device` targets the DK's on-board chip, so must use `JLinkExe` instead:
+```bash
+# Flash via build script (uses JLinkExe internally)
+bash firmware/build.sh xiao_ble --flash
+
+# Manual flash via JLinkExe (DK serial 1050222631)
+echo -e "loadfile firmware/build/xiao_ble/merged.hex\nr\ng\nexit\n" | \
+    JLinkExe -USB 1050222631 -Device nRF52840_xxAA -If SWD -Speed 4000 -autoconnect 1
+```
+
+**OTA**: Same as anchor — `./tools/scripts/ota_update.sh <xiao-ipv6> firmware/build/xiao_ble/firmware/zephyr/zephyr.signed.bin`
 
 ## UCI Device Configuration
 
@@ -89,6 +109,14 @@ python3 tools/scripts/uwb_tool.py /dev/ttyACM1 set-cal-offset 50  # manually set
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 save          # persist to NVS flash
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 reboot        # reboot device
 python3 tools/scripts/uwb_tool.py /dev/ttyACM1 factory-reset
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 cir-enable 50  # capture 50 CIR windows
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 cir-enable     # continuous CIR capture
+python3 tools/scripts/uwb_tool.py /dev/ttyACM1 cir-disable    # stop CIR capture
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 peer-list             # list known anchor peers
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 add-peer 0x0001       # manually add anchor peer
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 remove-peer 0x0001    # remove anchor peer
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 set-discovery-interval 10  # discover every 10 cycles
+python3 tools/scripts/uwb_tool.py /dev/ttyACM3 discover               # trigger immediate discovery
 ```
 
 Frame format: `[0xAA][CMD][LEN][PAYLOAD][CRC8]` → `[0xBB][CMD][STATUS][LEN][PAYLOAD][CRC8]`
@@ -121,7 +149,7 @@ MCUmgr SMP over UDP + MCUboot bootloader. Signed images uploaded over Thread IPv
 # Bump version before building update (firmware/VERSION)
 ```
 
-Anchor (nRF52840): dual-slot with swap + rollback over Thread. Tag (DWM3001CDK): single-slot MCUboot with serial recovery — hold button (P0.02) during reset, then upload via `mcumgr --conntype serial`. Flash both boards using `merged.hex` (not `zephyr.hex`) to include MCUboot + signed app.
+Anchor (nRF52840) and XIAO BLE: dual-slot with swap + rollback over Thread. Tag (DWM3001CDK): single-slot MCUboot with serial recovery — hold button (P0.02) during reset, then upload via `mcumgr --conntype serial`. Flash all boards using `merged.hex` (not `zephyr.hex`) to include MCUboot + signed app.
 
 Tag serial recovery:
 ```bash
@@ -150,7 +178,7 @@ Shared firmware source builds for all boards; board-specific config in `firmware
 
 **Firmware modules** (all in `firmware/src/`):
 - `main.c` — boot sequence: device_config → thread_coap → uci_coap → uwb_manager → uci_uart → autostart
-- `uwb_manager.c/h` — DS-TWR ranging loop (interrupt-driven, priority 0), start/stop/status API
+- `uwb_manager.c/h` — DS-TWR ranging loop (interrupt-driven, priority 0), multi-anchor peer list, auto-discovery, start/stop/status API
 - `thread_coap.c/h` — Thread join + CoAP POST `/distance` (anchor) and `/event` (tag) to multicast
 - `device_config.c/h` — NVS-backed persistent config (role, addr, interval, server, autostart)
 - `uci.c/h` — UCI binary protocol parser and command dispatch (mutex-protected)

@@ -32,6 +32,12 @@
 #define UCI_CMD_CALIBRATE       0x30
 #define UCI_CMD_SET_CAL_OFFSET  0x31
 #define UCI_CMD_GET_CAL_OFFSET  0x32
+#define UCI_CMD_CIR_ENABLE      0x40
+#define UCI_CMD_GET_PEER_LIST   0x50
+#define UCI_CMD_ADD_PEER        0x51
+#define UCI_CMD_REMOVE_PEER     0x52
+#define UCI_CMD_SET_DISC_INTERVAL 0x53
+#define UCI_CMD_TRIGGER_DISC    0x54
 
 /* ── Status codes ────────────────────────────────────────────────── */
 

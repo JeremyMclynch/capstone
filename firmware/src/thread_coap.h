@@ -8,6 +8,7 @@
 #define UWB_EVT_RESP_RX   0x02  /* Tag received a RESP */
 #define UWB_EVT_FINAL_TX  0x03  /* Tag sent a FINAL */
 #define UWB_EVT_NO_RESP   0x10  /* Tag got no RESP (timeout) */
+#define UWB_EVT_DISC_RX   0x20  /* Anchor received a discovery poll */
 
 /**
  * @brief Initialize OpenThread and the CoAP client.
@@ -44,6 +45,22 @@ void thread_coap_send_distance(uint16_t anchor_id, uint16_t tag_id,
  * @param seq      Current frame sequence number.
  */
 void thread_coap_send_event(uint16_t node_id, uint8_t event, uint8_t seq);
+
+/**
+ * @brief Enqueue a CIR data capture for CoAP transmission.
+ *
+ * @param anchor_id      Anchor UWB short address.
+ * @param tag_id         Tag UWB short address.
+ * @param distance_mm    Distance in mm from same ranging cycle.
+ * @param fp_index       First-path CIR index (Q10.6).
+ * @param sample_offset  Starting sample index in CIR accumulator.
+ * @param cir_data       128 complex samples (32-bit packed int16 I/Q).
+ * @param num_samples    Number of samples (128).
+ */
+void thread_coap_send_cir(uint16_t anchor_id, uint16_t tag_id,
+                           uint32_t distance_mm,
+                           uint16_t fp_index, uint16_t sample_offset,
+                           const uint32_t *cir_data, uint8_t num_samples);
 
 /**
  * @brief Update the CoAP server address at runtime.

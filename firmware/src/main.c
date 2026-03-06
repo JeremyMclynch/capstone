@@ -92,6 +92,7 @@ int main(void)
     }
 
     uwb_manager_set_distance_cb(on_distance_measured);
+    uwb_manager_set_cir_cb(thread_coap_send_cir);
 
     /* 6. Start UCI command interface */
     ret = uci_uart_init();

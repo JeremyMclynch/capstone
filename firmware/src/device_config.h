@@ -19,6 +19,7 @@ struct device_config {
     uint16_t server_port;                  /* CoAP server UDP port */
     bool     autostart;                    /* Auto-start ranging on boot */
     int16_t  calibration_offset_mm;        /* Distance calibration offset (mm) */
+    uint16_t discovery_interval;           /* Discovery every N cycles (0=disabled) */
 };
 
 /* Global runtime config — initialized by device_config_init() */

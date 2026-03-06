@@ -1,0 +1,39 @@
+/*
+ * MCUboot partition overlay for XIAO BLE (nRF52840)
+ * Overrides the stock UF2+SoftDevice partition layout with MCUboot dual-slot.
+ * The original boot_partition, code_partition, and storage_partition are
+ * replaced with new addresses/sizes.
+ */
+
+/* Repurpose existing partitions from UF2 layout */
+&boot_partition {
+	reg = <0x00000 0xC000>;
+	label = "mcuboot";
+};
+
+&code_partition {
+	label = "image-0";
+	reg = <0x0C000 0x6E000>;
+};
+
+&storage_partition {
+	reg = <0xF8000 0x8000>;
+};
+
+/* Add new partitions for MCUboot dual-slot */
+&flash0 {
+	partitions {
+		slot0_partition: partition@c000 {
+			label = "image-0";
+			reg = <0x0C000 0x6E000>;
+		};
+		slot1_partition: partition@7a000 {
+			label = "image-1";
+			reg = <0x7A000 0x6E000>;
+		};
+		scratch_partition: partition@e8000 {
+			label = "image-scratch";
+			reg = <0xE8000 0x10000>;
+		};
+	};
+};

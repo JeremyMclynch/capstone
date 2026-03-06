@@ -32,6 +32,22 @@ CREATE INDEX IF NOT EXISTS idx_measurements_anchor_tag
 CREATE INDEX IF NOT EXISTS idx_measurements_received_at
     ON measurements (received_at);
 
+CREATE TABLE IF NOT EXISTS cir_captures (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    anchor_id     INTEGER NOT NULL,
+    tag_id        INTEGER NOT NULL,
+    distance_mm   INTEGER,
+    fp_index      INTEGER,
+    sample_offset INTEGER,
+    num_samples   INTEGER,
+    read_mode     INTEGER,
+    cir_data      BLOB NOT NULL,
+    received_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cir_anchor_tag
+    ON cir_captures (anchor_id, tag_id);
+
 CREATE VIEW IF NOT EXISTS latest_distances AS
     SELECT
         anchor_id,
@@ -123,3 +139,31 @@ def get_latest_per_pair():
                FROM latest_distances"""
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def insert_cir_capture(
+    anchor_id: int,
+    tag_id: int,
+    distance_mm: int,
+    fp_index: int,
+    sample_offset: int,
+    num_samples: int,
+    read_mode: int,
+    cir_data: bytes,
+) -> int:
+    """
+    Insert a CIR capture record with raw I/Q data.
+
+    Returns the rowid of the inserted record.
+    """
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO cir_captures (anchor_id, tag_id, distance_mm, fp_index,
+                                      sample_offset, num_samples, read_mode, cir_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (anchor_id, tag_id, distance_mm, fp_index,
+             sample_offset, num_samples, read_mode, cir_data),
+        )
+        return cursor.lastrowid

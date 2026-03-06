@@ -48,7 +48,40 @@
 };
 
 /*
- * Stock UF2+SoftDevice partition layout (nrf52840_partition_uf2_sdv7.dtsi)
- * is used as-is. NVS uses the existing storage_partition at 0xED000.
- * No MCUboot — app flashed via UF2 drag-and-drop.
+ * MCUboot partition layout — replaces UF2+SoftDevice layout.
+ * Partition manager (pm_static_xiao_ble.yml) handles actual layout.
+ * DTS overrides here keep nodelabels consistent for MCUboot/sysbuild.
  */
+
+/* Repurpose existing partitions from UF2 layout */
+&boot_partition {
+	reg = <0x00000 0xC000>;
+	label = "mcuboot";
+};
+
+&code_partition {
+	label = "image-0";
+	reg = <0x0C000 0x6E000>;
+};
+
+&storage_partition {
+	reg = <0xF8000 0x8000>;
+};
+
+/* Add MCUboot slot partitions */
+&flash0 {
+	partitions {
+		slot0_partition: partition@c000 {
+			label = "image-0";
+			reg = <0x0C000 0x6E000>;  /* 440 KB */
+		};
+		slot1_partition: partition@7a000 {
+			label = "image-1";
+			reg = <0x7A000 0x6E000>;  /* 440 KB */
+		};
+		scratch_partition: partition@e8000 {
+			label = "image-scratch";
+			reg = <0xE8000 0x10000>;  /* 64 KB */
+		};
+	};
+};

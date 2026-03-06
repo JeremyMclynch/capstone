@@ -26,6 +26,13 @@ Commands:
     factory-reset               Erase config and reboot with defaults
     reboot                      Reboot the device
     enter-bootloader            Reboot into MCUboot serial recovery mode
+    cir-enable [count]          Enable CIR capture (0 or omit for continuous)
+    cir-disable                 Disable CIR capture
+    peer-list                   List known anchor peers (tag only)
+    add-peer <0xNNNN>           Add an anchor peer by address
+    remove-peer <0xNNNN>        Remove an anchor peer by address
+    set-discovery-interval <N>  Set discovery interval (0=disabled, N=every N cycles)
+    discover                    Trigger immediate discovery round
 
 Examples:
     python3 uwb_tool.py /dev/ttyACM1 info
@@ -59,6 +66,12 @@ CMD_REBOOT           = 0x23
 CMD_CALIBRATE        = 0x30
 CMD_SET_CAL_OFFSET   = 0x31
 CMD_GET_CAL_OFFSET   = 0x32
+CMD_CIR_ENABLE       = 0x40
+CMD_GET_PEER_LIST    = 0x50
+CMD_ADD_PEER         = 0x51
+CMD_REMOVE_PEER      = 0x52
+CMD_SET_DISC_INTERVAL = 0x53
+CMD_TRIGGER_DISC     = 0x54
 
 STATUS_NAMES = {
     0x00: "OK",
@@ -183,6 +196,56 @@ class UWBDeviceBase:
             return {"error": STATUS_NAMES.get(status, f"0x{status:02X}")}
         offset = struct.unpack_from("<h", payload, 0)[0]
         return {"offset_mm": offset}
+
+    def cir_enable(self, cycle_count: int = 0) -> str:
+        payload = struct.pack("<BH", 1, cycle_count)
+        status, _ = self._send_request(CMD_CIR_ENABLE, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def cir_disable(self) -> str:
+        payload = struct.pack("<BH", 0, 0)
+        status, _ = self._send_request(CMD_CIR_ENABLE, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def get_peer_list(self) -> dict:
+        status, payload = self._send_request(CMD_GET_PEER_LIST)
+        if status != 0 or len(payload) < 1:
+            return {"error": STATUS_NAMES.get(status, f"0x{status:02X}")}
+        count = payload[0]
+        peers = []
+        off = 1
+        for _ in range(count):
+            if off + 6 > len(payload):
+                break
+            addr = struct.unpack_from("<H", payload, off)[0]
+            rssi = struct.unpack_from("<h", payload, off + 2)[0]
+            fp   = struct.unpack_from("<h", payload, off + 4)[0]
+            peers.append({
+                "addr": f"0x{addr:04X}",
+                "rssi_dBm": rssi / 256.0,
+                "fp_power_dBm": fp / 256.0,
+            })
+            off += 6
+        return {"count": count, "peers": peers}
+
+    def add_peer(self, addr: int) -> str:
+        payload = struct.pack("<H", addr)
+        status, _ = self._send_request(CMD_ADD_PEER, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def remove_peer(self, addr: int) -> str:
+        payload = struct.pack("<H", addr)
+        status, _ = self._send_request(CMD_REMOVE_PEER, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def set_discovery_interval(self, interval: int) -> str:
+        payload = struct.pack("<H", interval)
+        status, _ = self._send_request(CMD_SET_DISC_INTERVAL, payload)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
+
+    def trigger_discovery(self) -> str:
+        status, _ = self._send_request(CMD_TRIGGER_DISC)
+        return STATUS_NAMES.get(status, f"0x{status:02X}")
 
 
 # ── Serial UART transport ────────────────────────────────────────────
@@ -436,6 +499,54 @@ def main():
                 print(f"  get-cal-offset: Error — {result['error']}")
             else:
                 print(f"  offset: {result['offset_mm']} mm")
+
+        elif cmd == "cir-enable":
+            count = int(args[0]) if args else 0
+            result = dev.cir_enable(count)
+            mode = f"{count} cycles" if count > 0 else "continuous"
+            print(f"  cir-enable ({mode}): {result}")
+
+        elif cmd == "cir-disable":
+            result = dev.cir_disable()
+            print(f"  cir-disable: {result}")
+
+        elif cmd in ("peer-list", "peers"):
+            result = dev.get_peer_list()
+            if "error" in result:
+                print(f"  peer-list: Error — {result['error']}")
+            else:
+                print(f"  peers: {result['count']}")
+                for p in result["peers"]:
+                    print(f"    {p['addr']}  rssi={p['rssi_dBm']:.1f} dBm  fp={p['fp_power_dBm']:.1f} dBm")
+
+        elif cmd == "add-peer":
+            if not args:
+                print("Usage: add-peer <0xNNNN>")
+                sys.exit(1)
+            addr = int(args[0], 0)
+            result = dev.add_peer(addr)
+            print(f"  add-peer 0x{addr:04X}: {result}")
+
+        elif cmd == "remove-peer":
+            if not args:
+                print("Usage: remove-peer <0xNNNN>")
+                sys.exit(1)
+            addr = int(args[0], 0)
+            result = dev.remove_peer(addr)
+            print(f"  remove-peer 0x{addr:04X}: {result}")
+
+        elif cmd == "set-discovery-interval":
+            if not args:
+                print("Usage: set-discovery-interval <N>")
+                sys.exit(1)
+            interval = int(args[0])
+            result = dev.set_discovery_interval(interval)
+            mode = "disabled" if interval == 0 else f"every {interval} cycles"
+            print(f"  set-discovery-interval ({mode}): {result}")
+
+        elif cmd == "discover":
+            result = dev.trigger_discovery()
+            print(f"  discover: {result}")
 
         else:
             print(f"Unknown command: {cmd}")

@@ -265,13 +265,6 @@ static void handle_enter_bootloader(const struct uci_request *req,
     LOG_INF("Entering MCUboot serial recovery...");
     k_sleep(K_MSEC(100));
     sys_reboot(SYS_REBOOT_WARM);
-#elif defined(CONFIG_BOARD_XIAO_BLE)
-    /* Adafruit UF2 bootloader: write magic to GPREGRET and reset */
-    NRF_POWER->GPREGRET = 0x57; /* DFU_MAGIC_UF2_RESET */
-    rsp_ok(rsp, req->cmd);
-    LOG_INF("Entering UF2 bootloader...");
-    k_sleep(K_MSEC(100));
-    sys_reboot(SYS_REBOOT_WARM);
 #else
     LOG_WRN("Bootloader entry not supported on this board");
     rsp_err(rsp, req->cmd, UCI_STATUS_ERR_UNKNOWN_CMD);
@@ -349,6 +342,109 @@ static void handle_get_cal_offset(const struct uci_request *req,
     rsp->len = 2;
 }
 
+static void handle_cir_enable(const struct uci_request *req,
+                               struct uci_response *rsp)
+{
+    if (req->len < 3) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BAD_PAYLOAD);
+        return;
+    }
+
+    bool enabled = req->payload[0] != 0;
+    uint16_t cycle_count = (uint16_t)req->payload[1] |
+                           ((uint16_t)req->payload[2] << 8);
+
+    uwb_manager_set_cir_enabled(enabled, cycle_count);
+    rsp_ok(rsp, req->cmd);
+}
+
+/* ── Multi-anchor peer management handlers ────────────────────────── */
+
+static void handle_get_peer_list(const struct uci_request *req,
+                                  struct uci_response *rsp)
+{
+    struct uwb_peer peers[UWB_MAX_ANCHORS];
+    uint8_t count;
+    uwb_manager_get_peers(peers, &count);
+
+    rsp->cmd = req->cmd;
+    rsp->status = UCI_STATUS_OK;
+
+    /* Payload: count(1) + per-peer: addr(2) + rssi_q8(2) + fp_power_q8(2) = 6B each */
+    rsp->payload[0] = count;
+    uint8_t off = 1;
+
+    for (uint8_t i = 0; i < UWB_MAX_ANCHORS && off + 6 <= UCI_MAX_PAYLOAD; i++) {
+        if (peers[i].addr == 0) continue;
+        rsp->payload[off++] = (uint8_t)(peers[i].addr & 0xFF);
+        rsp->payload[off++] = (uint8_t)(peers[i].addr >> 8);
+        rsp->payload[off++] = (uint8_t)(peers[i].rssi_q8 & 0xFF);
+        rsp->payload[off++] = (uint8_t)(peers[i].rssi_q8 >> 8);
+        rsp->payload[off++] = (uint8_t)(peers[i].fp_power_q8 & 0xFF);
+        rsp->payload[off++] = (uint8_t)(peers[i].fp_power_q8 >> 8);
+    }
+    rsp->len = off;
+}
+
+static void handle_add_peer(const struct uci_request *req,
+                             struct uci_response *rsp)
+{
+    if (req->len != 2) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BAD_PAYLOAD);
+        return;
+    }
+
+    uint16_t addr = (uint16_t)req->payload[0] | ((uint16_t)req->payload[1] << 8);
+    int ret = uwb_manager_add_peer(addr);
+
+    if (ret == -EEXIST || ret == -EINVAL) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_INVALID_VAL);
+    } else if (ret == -ENOSPC) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BUSY);
+    } else {
+        rsp_ok(rsp, req->cmd);
+    }
+}
+
+static void handle_remove_peer(const struct uci_request *req,
+                                struct uci_response *rsp)
+{
+    if (req->len != 2) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BAD_PAYLOAD);
+        return;
+    }
+
+    uint16_t addr = (uint16_t)req->payload[0] | ((uint16_t)req->payload[1] << 8);
+    int ret = uwb_manager_remove_peer(addr);
+
+    if (ret == -ENOENT) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_INVALID_VAL);
+    } else {
+        rsp_ok(rsp, req->cmd);
+    }
+}
+
+static void handle_set_disc_interval(const struct uci_request *req,
+                                      struct uci_response *rsp)
+{
+    if (req->len != 2) {
+        rsp_err(rsp, req->cmd, UCI_STATUS_ERR_BAD_PAYLOAD);
+        return;
+    }
+
+    uint16_t interval = (uint16_t)req->payload[0] | ((uint16_t)req->payload[1] << 8);
+    g_config.discovery_interval = interval;
+    uwb_manager_set_discovery_interval(interval);
+    rsp_ok(rsp, req->cmd);
+}
+
+static void handle_trigger_disc(const struct uci_request *req,
+                                 struct uci_response *rsp)
+{
+    uwb_manager_trigger_discovery();
+    rsp_ok(rsp, req->cmd);
+}
+
 /* ── Dispatcher ───────────────────────────────────────────────────── */
 
 void uci_process(const struct uci_request *req, struct uci_response *rsp)
@@ -369,6 +465,12 @@ void uci_process(const struct uci_request *req, struct uci_response *rsp)
     case UCI_CMD_CALIBRATE:     handle_calibrate(req, rsp);          break;
     case UCI_CMD_SET_CAL_OFFSET: handle_set_cal_offset(req, rsp);   break;
     case UCI_CMD_GET_CAL_OFFSET: handle_get_cal_offset(req, rsp);   break;
+    case UCI_CMD_CIR_ENABLE:    handle_cir_enable(req, rsp);       break;
+    case UCI_CMD_GET_PEER_LIST: handle_get_peer_list(req, rsp);   break;
+    case UCI_CMD_ADD_PEER:      handle_add_peer(req, rsp);        break;
+    case UCI_CMD_REMOVE_PEER:   handle_remove_peer(req, rsp);     break;
+    case UCI_CMD_SET_DISC_INTERVAL: handle_set_disc_interval(req, rsp); break;
+    case UCI_CMD_TRIGGER_DISC:  handle_trigger_disc(req, rsp);    break;
     default:
         LOG_WRN("Unknown UCI cmd 0x%02X", req->cmd);
         rsp_err(rsp, req->cmd, UCI_STATUS_ERR_UNKNOWN_CMD);

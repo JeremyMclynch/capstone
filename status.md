@@ -271,3 +271,5 @@ mcumgr --conntype udp --connstring=[<ipv6-addr>]:1337 image list    # Show insta
 4. **Antenna delay calibration** — `TX_ANT_DLY`/`RX_ANT_DLY` (16385) are defaults. Calibration at a known distance would improve accuracy from ~±3cm to ~±10mm
 
 5. **Web dashboard** — visualize distance measurements in real time (FastAPI/WebSocket planned in server/)
+
+6. **CIR analysis tooling** — CIR capture over CoAP is working (48 samples per ranging cycle, stored in SQLite). Next steps: build a script to read CIR captures from the database, plot amplitude vs sample index, extract NLOS-relevant features (rise time, RMS delay spread, peak-to-first-path ratio, kurtosis), and use these to build a better NLOS classifier than the current RSSI/first-path heuristic

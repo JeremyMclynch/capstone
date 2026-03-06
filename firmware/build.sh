@@ -3,20 +3,26 @@
 # UWB Mesh Tracker - Firmware Build Script
 #
 # Usage:
-#   ./build.sh [BOARD] [--flash] [--clean]
+#   ./build.sh [BOARD] [--flash] [--flash-jlink] [--clean]
 #
 # Examples:
 #   ./build.sh                                  # Build for nRF52840 DK (anchor)
 #   ./build.sh decawave_dwm3001cdk              # Build for DWM3001CDK (tag)
-#   ./build.sh xiao_ble                         # Build for XIAO BLE (tag)
-#   ./build.sh nrf52840dk/nrf52840 --flash      # Build and flash nRF52840 DK
-#   ./build.sh decawave_dwm3001cdk --flash      # Build and flash DWM3001CDK
+#   ./build.sh xiao_ble                         # Build for XIAO BLE (anchor)
+#   OTA_TARGET=<ipv6> ./build.sh nrf52840dk/nrf52840 --flash  # Build and OTA
+#   OTA_TARGET=<ipv6> ./build.sh xiao_ble --flash            # Build and OTA
+#   ./build.sh xiao_ble --flash-jlink           # Build and flash XIAO via J-Link SWD
+#   ./build.sh nrf52840dk/nrf52840 --flash-jlink # Build and flash DK via J-Link
 #   ./build.sh nrf52840dk/nrf52840 --clean      # Clean rebuild
 #
+# Flash modes:
+#   --flash       OTA update via MCUmgr (uploads signed bin over Thread)
+#   --flash-jlink Full flash via J-Link (writes merged.hex including MCUboot)
+#
 # Board → Default Role:
-#   nrf52840dk/nrf52840               → ANCHOR (addr 0x0001)
-#   decawave_dwm3001cdk               → TAG    (addr 0x0100)
-#   xiao_ble                          → TAG    (addr 0x0200)
+#   nrf52840dk/nrf52840               → ANCHOR (addr auto)
+#   decawave_dwm3001cdk               → TAG    (addr auto)
+#   xiao_ble                          → ANCHOR (addr auto)
 #
 # To build as TAG on nRF52840DK, add:
 #   -- -DCONFIG_NODE_ROLE_TAG=y -DCONFIG_NODE_ROLE_ANCHOR=n \
@@ -31,6 +37,7 @@ TOOLCHAIN="${HOME}/ncs/toolchains/927563c840"
 APP_DIR="${SCRIPT_DIR}"
 BOARD="${1:-nrf52840dk/nrf52840}"
 DO_FLASH=false
+DO_FLASH_JLINK=false
 DO_CLEAN=false
 
 # Detect west workspace
@@ -49,13 +56,14 @@ fi
 # Parse flags
 for arg in "$@"; do
     case "$arg" in
-        --flash)  DO_FLASH=true ;;
-        --clean)  DO_CLEAN=true ;;
+        --flash)       DO_FLASH=true ;;
+        --flash-jlink) DO_FLASH_JLINK=true ;;
+        --clean)       DO_CLEAN=true ;;
     esac
 done
 
 # Set up nRF Connect SDK toolchain environment
-export PATH="${TOOLCHAIN}/bin:${TOOLCHAIN}/usr/bin:${TOOLCHAIN}/usr/local/bin:${TOOLCHAIN}/opt/bin:${TOOLCHAIN}/opt/zephyr-sdk/arm-zephyr-eabi/bin:/usr/bin:/bin"
+export PATH="${TOOLCHAIN}/bin:${TOOLCHAIN}/usr/bin:${TOOLCHAIN}/usr/local/bin:${TOOLCHAIN}/opt/bin:${TOOLCHAIN}/opt/zephyr-sdk/arm-zephyr-eabi/bin:${HOME}/go/bin:/usr/local/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="${TOOLCHAIN}/lib:${TOOLCHAIN}/lib/x86_64-linux-gnu:${TOOLCHAIN}/usr/local/lib"
 export PYTHONHOME="${TOOLCHAIN}/usr/local"
 export PYTHONPATH="${TOOLCHAIN}/usr/local/lib/python3.12:${TOOLCHAIN}/usr/local/lib/python3.12/site-packages"
@@ -115,9 +123,12 @@ if [[ "$BOARD" == *"dwm3001"* ]]; then
     EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_DTC_OVERLAY_FILE=${APP_DIR}/sysbuild/mcuboot_dwm3001cdk/serial_recovery.overlay"
 fi
 
-# XIAO BLE: app-only build (no MCUboot, uses stock UF2 bootloader)
+# XIAO BLE: MCUboot dual-slot, flashed via J-Link (replaces UF2 bootloader)
 if [[ "$BOARD" == "xiao_ble" ]]; then
-    NO_SYSBUILD="--no-sysbuild"
+    EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_DTC_OVERLAY_FILE=${APP_DIR}/sysbuild/mcuboot_xiao_ble/partitions.overlay"
+    EXTRA_ARGS="$EXTRA_ARGS -Dmcuboot_OVERLAY_CONFIG=${APP_DIR}/sysbuild/mcuboot_xiao_ble/mcuboot.conf"
+    EXTRA_ARGS="$EXTRA_ARGS -DPM_STATIC_YML_FILE=${APP_DIR}/pm_static_xiao_ble.yml"
+    EXTRA_ARGS="$EXTRA_ARGS -Dfirmware_PM_STATIC_YML_FILE=${APP_DIR}/pm_static_xiao_ble.yml"
 fi
 
 west build \
@@ -131,67 +142,41 @@ west build \
 echo ""
 echo "=== Build successful ==="
 
-if [[ "$BOARD" == "xiao_ble" ]]; then
-    # XIAO BLE: app-only build — convert zephyr.hex to UF2 and generate DFU package
-    UF2_SCRIPT="${WEST_DIR}/zephyr/scripts/build/uf2conv.py"
-    "${TOOLCHAIN}/usr/local/bin/python3" "${UF2_SCRIPT}" -c -f 0xada52840 \
-        -o "${BUILD_DIR}/zephyr/zephyr.uf2" "${BUILD_DIR}/zephyr/zephyr.hex"
+echo "Flash image: ${BUILD_DIR}/merged.hex"
+echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
 
-    # Generate DFU package for serial flashing via adafruit-nrfutil
-    NRFUTIL_BIN="${HOME}/.local/bin/adafruit-nrfutil"
-    if [ -x "$NRFUTIL_BIN" ]; then
-        unset PYTHONHOME PYTHONPATH
-        "$NRFUTIL_BIN" dfu genpkg \
-            --dev-type 0x0052 \
-            --application "${BUILD_DIR}/zephyr/zephyr.hex" \
-            "${BUILD_DIR}/zephyr/dfu_package.zip" 2>/dev/null
-        echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
-        echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
-        echo "DFU package: ${BUILD_DIR}/zephyr/dfu_package.zip  (serial flash)"
+# Flash via J-Link (writes merged.hex including MCUboot)
+if [ "$DO_FLASH_JLINK" = true ]; then
+    echo ""
+    echo "[build.sh] Flashing ${BOARD} via J-Link..."
+    unset PYTHONHOME PYTHONPATH
+    if [[ "$BOARD" == "xiao_ble" ]]; then
+        # XIAO BLE: flash via nRF52840 DK J-Link Debug Out (SWD)
+        # Must use JLinkExe — nrfutil targets the DK's on-board chip, not Debug Out
+        echo -e "loadfile ${BUILD_DIR}/merged.hex\nr\ng\nexit\n" | \
+            JLinkExe -USB 1050222631 -Device nRF52840_xxAA -If SWD -Speed 4000 -autoconnect 1
     else
-        echo "Flash image: ${BUILD_DIR}/zephyr/zephyr.hex"
-        echo "UF2 image:   ${BUILD_DIR}/zephyr/zephyr.uf2  (drag to XIAO USB drive)"
-        echo "(install adafruit-nrfutil for serial DFU flashing)"
+        nrfutil device program --firmware "${BUILD_DIR}/merged.hex"
     fi
-else
-    echo "Flash image: ${BUILD_DIR}/merged.hex"
-    echo "OTA image:   ${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
+    echo "=== Flash complete ==="
 fi
 
-# Flash if requested
+# OTA flash via MCUmgr (uploads signed bin over Thread)
 if [ "$DO_FLASH" = true ]; then
     echo ""
-    if [[ "$BOARD" == "xiao_ble" ]]; then
-        NRFUTIL_BIN="${HOME}/.local/bin/adafruit-nrfutil"
-        if [ ! -x "$NRFUTIL_BIN" ]; then
-            echo "ERROR: adafruit-nrfutil not found. Install with:"
-            echo "  python3 -m venv ~/.local/share/adafruit-nrfutil-venv"
-            echo "  ~/.local/share/adafruit-nrfutil-venv/bin/pip install adafruit-nrfutil"
-            echo "  ln -sf ~/.local/share/adafruit-nrfutil-venv/bin/adafruit-nrfutil ~/.local/bin/"
-            exit 1
-        fi
-
-        # Auto-detect XIAO serial port from nrfutil device list
-        unset PYTHONHOME PYTHONPATH
-        XIAO_PORT=$(nrfutil device list 2>/dev/null | grep -A2 "XIAO" | grep -oP '/dev/ttyACM\d+' | head -1)
-        if [[ -z "$XIAO_PORT" ]]; then
-            echo "ERROR: No XIAO device found. Double-tap RST to enter bootloader, then re-run."
-            exit 1
-        fi
-
-        echo "[build.sh] Flashing XIAO BLE via serial DFU on ${XIAO_PORT}..."
-        "$NRFUTIL_BIN" --verbose dfu serial \
-            --package "${BUILD_DIR}/zephyr/dfu_package.zip" \
-            --port "$XIAO_PORT" \
-            --baudrate 115200 \
-            --singlebank \
-            --touch 1200
-        echo "=== Flash complete ==="
-    else
-        echo "[build.sh] Flashing ${BOARD}..."
-        # Use merged.hex which includes MCUboot + signed app
-        unset PYTHONHOME PYTHONPATH
-        nrfutil device program --firmware "${BUILD_DIR}/merged.hex"
-        echo "=== Flash complete ==="
+    unset PYTHONHOME PYTHONPATH
+    OTA_IMAGE="${BUILD_DIR}/firmware/zephyr/zephyr.signed.bin"
+    if [ ! -f "${OTA_IMAGE}" ]; then
+        echo "ERROR: Signed image not found: ${OTA_IMAGE}"
+        exit 1
     fi
+    if [ -z "${OTA_TARGET:-}" ]; then
+        echo "ERROR: OTA requires target IPv6 address."
+        echo "Usage: OTA_TARGET=<ipv6> ./build.sh ${BOARD} --flash"
+        echo "   or: ./tools/scripts/ota_update.sh <ipv6> ${OTA_IMAGE}"
+        exit 1
+    fi
+    echo "[build.sh] OTA flashing ${BOARD} at [${OTA_TARGET}]..."
+    bash "${PROJECT_ROOT}/tools/scripts/ota_update.sh" "${OTA_TARGET}" "${OTA_IMAGE}"
+    echo "=== OTA flash complete ==="
 fi

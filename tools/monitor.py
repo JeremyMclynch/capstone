@@ -33,20 +33,27 @@ DIST_FMT_V1 = struct.Struct("<HHII")       # 12 bytes (legacy)
 EVT_FMT  = struct.Struct("<HBBxx")
 EVT_SIZE = EVT_FMT.size   # 6 bytes
 
+# /cir payload header: anchor_id(u16), tag_id(u16), distance_mm(u32), uptime_s(u32),
+#   fp_index(u16), sample_offset(u16), num_samples(u8), read_mode(u8), reserved(u16)
+CIR_HDR_FMT = struct.Struct("<HHIIHHBBxx")  # 20 bytes
+
 EVT_NAMES = {
     0x01: "POLL_TX",
     0x02: "RESP_RX",
     0x03: "FINAL_TX",
     0x10: "NO_RESP",
+    0x20: "DISC_RX",
 }
 
 _dist_count = 0
 _evt_count  = 0
+_cir_count  = 0
 _t_last_dist: dict[tuple[int, int], float] = {}
 
-# ANSI colors for NLOS flags
+# ANSI colors
 _YELLOW = "\033[33m"
 _RED    = "\033[31m"
+_CYAN   = "\033[36m"
 _RESET  = "\033[0m"
 
 
@@ -135,10 +142,39 @@ class EventResource(resource.Resource):
         _evt_count += 1
         if not self._quiet:
             src = request.remote.hostinfo if request.remote else "?"
-            print(
+            line = (
                 f"[EVT  {_evt_count:>4}]  node=0x{node_id:04X}  {evt_name:<10}"
                 f"  seq={seq:3d}  from={src}"
             )
+            if event == 0x20:  # DISC_RX
+                print(f"{_CYAN}{line}{_RESET}")
+            else:
+                print(line)
+        return aiocoap.Message(code=aiocoap.CHANGED)
+
+
+class CIRResource(resource.Resource):
+    async def render_post(self, request: aiocoap.Message) -> aiocoap.Message:
+        global _cir_count
+
+        payload = request.payload
+        if len(payload) < CIR_HDR_FMT.size:
+            print(f"[WARN] /cir bad size {len(payload)}B")
+            return aiocoap.Message(code=aiocoap.CHANGED)
+
+        (anchor_id, tag_id, distance_mm, uptime_s,
+         fp_index, sample_offset, num_samples, read_mode) = CIR_HDR_FMT.unpack(
+            payload[:CIR_HDR_FMT.size])
+
+        distance_m = distance_mm / 1000.0
+        _cir_count += 1
+
+        src = request.remote.hostinfo if request.remote else "?"
+        print(
+            f"[CIR  {_cir_count:>4}]  anchor=0x{anchor_id:04X}  tag=0x{tag_id:04X}"
+            f"  {num_samples} samples @ offset={sample_offset}"
+            f"  dist={distance_m:.3f} m  from={src}"
+        )
         return aiocoap.Message(code=aiocoap.CHANGED)
 
 
@@ -219,6 +255,7 @@ async def main():
     site = resource.Site()
     site.add_resource(["distance"], DistanceResource())
     site.add_resource(["event"],    EventResource(quiet=args.distance_only))
+    site.add_resource(["cir"],      CIRResource())
 
     context = await aiocoap.Context.create_server_context(site, bind=("::", 5683))
 
@@ -238,7 +275,7 @@ async def main():
             except asyncio.CancelledError:
                 pass
         await context.shutdown()
-        print(f"\nTotal: {_dist_count} distance measurements, {_evt_count} tag events.")
+        print(f"\nTotal: {_dist_count} distance, {_evt_count} events, {_cir_count} CIR captures.")
 
 
 if __name__ == "__main__":

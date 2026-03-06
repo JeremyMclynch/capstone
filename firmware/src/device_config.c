@@ -10,6 +10,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 #include <string.h>
+#include <soc.h>
+#include <hal/nrf_ficr.h>
 
 #include "device_config.h"
 
@@ -28,13 +30,36 @@ struct device_config g_config;
 #define SETTINGS_KEY_PORT      "uwb/port"
 #define SETTINGS_KEY_AUTOSTART "uwb/autostart"
 #define SETTINGS_KEY_CAL_OFFSET "uwb/cal_offset"
+#define SETTINGS_KEY_DISC_INTERVAL "uwb/disc_int"
 
 /* ── Load Kconfig defaults into g_config ─────────────────────────── */
+
+/**
+ * Derive a unique UWB short address from the chip's factory device ID.
+ * Uses FICR DEVICEID[0..1] (64-bit unique per chip) hashed to 16 bits.
+ * Result is in range [0x0100, 0xFFFE] to avoid broadcast (0xFFFF) and
+ * the anchor range (0x0001–0x00FF).
+ */
+static uint16_t derive_addr_from_device_id(void)
+{
+    uint32_t id0 = nrf_ficr_deviceid_get(NRF_FICR, 0);
+    uint32_t id1 = nrf_ficr_deviceid_get(NRF_FICR, 1);
+    /* xor-fold 64 bits to 16 bits */
+    uint16_t hash = (uint16_t)(id0 ^ (id0 >> 16) ^ id1 ^ (id1 >> 16));
+    /* Clamp to tag range [0x0100, 0xFFFE] */
+    if (hash < 0x0100) {
+        hash += 0x0100;
+    }
+    if (hash == 0xFFFF) {
+        hash = 0xFFFE;
+    }
+    return hash;
+}
 
 static void load_defaults(void)
 {
     g_config.role = IS_ENABLED(CONFIG_NODE_ROLE_TAG) ? ROLE_TAG : ROLE_ANCHOR;
-    g_config.uwb_addr = CONFIG_UWB_NODE_SHORT_ADDR;
+    g_config.uwb_addr = derive_addr_from_device_id();
     g_config.ranging_interval_ms = CONFIG_UWB_RANGING_INTERVAL_MS;
     strncpy(g_config.server_addr, CONFIG_COAP_SERVER_ADDR,
             sizeof(g_config.server_addr) - 1);
@@ -42,6 +67,7 @@ static void load_defaults(void)
     g_config.server_port = CONFIG_COAP_SERVER_PORT;
     g_config.autostart = true;
     g_config.calibration_offset_mm = 0;
+    g_config.discovery_interval = 0;
 }
 
 /* ── Settings handler (called by settings_load()) ────────────────── */
@@ -80,6 +106,11 @@ static int config_set(const char *name, size_t len, settings_read_cb read_cb,
         return read_cb(cb_arg, &g_config.calibration_offset_mm,
                        sizeof(g_config.calibration_offset_mm));
     }
+    if (!strcmp(name, "disc_int")) {
+        if (len != sizeof(g_config.discovery_interval)) return -EINVAL;
+        return read_cb(cb_arg, &g_config.discovery_interval,
+                       sizeof(g_config.discovery_interval));
+    }
 
     return -ENOENT;
 }
@@ -106,14 +137,15 @@ int device_config_init(void)
         return ret;
     }
 
-    LOG_INF("Config: role=%s addr=0x%04X interval=%u ms server=[%s]:%u auto=%d cal=%d",
+    LOG_INF("Config: role=%s addr=0x%04X interval=%u ms server=[%s]:%u auto=%d cal=%d disc=%u",
             g_config.role == ROLE_TAG ? "TAG" : "ANCHOR",
             g_config.uwb_addr,
             g_config.ranging_interval_ms,
             g_config.server_addr,
             g_config.server_port,
             g_config.autostart,
-            g_config.calibration_offset_mm);
+            g_config.calibration_offset_mm,
+            g_config.discovery_interval);
 
     return 0;
 }
@@ -151,6 +183,10 @@ int device_config_save(void)
                           sizeof(g_config.calibration_offset_mm));
     if (r) { LOG_ERR("save cal_offset: %d", r); ret = r; }
 
+    r = settings_save_one(SETTINGS_KEY_DISC_INTERVAL, &g_config.discovery_interval,
+                          sizeof(g_config.discovery_interval));
+    if (r) { LOG_ERR("save disc_int: %d", r); ret = r; }
+
     if (!ret) {
         LOG_INF("Config saved to NVS");
     }
@@ -169,6 +205,7 @@ int device_config_reset(void)
     r = settings_delete(SETTINGS_KEY_PORT);      if (r) ret = r;
     r = settings_delete(SETTINGS_KEY_AUTOSTART);   if (r) ret = r;
     r = settings_delete(SETTINGS_KEY_CAL_OFFSET);  if (r) ret = r;
+    r = settings_delete(SETTINGS_KEY_DISC_INTERVAL); if (r) ret = r;
 
     if (!ret) {
         LOG_INF("Config erased — defaults will be used on next boot");
