@@ -120,7 +120,7 @@ def discover_devices(iface: str, timeout: int = 5) -> list:
     host_ips = get_host_ips(iface)
     try:
         result = subprocess.run(
-            ["ping6", "-c", str(timeout), "-I", iface, "ff03::1"],
+            ["ping", "-6", "-c", str(timeout), "-I", iface, "ff03::1"],
             capture_output=True, text=True, timeout=timeout + 3,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError):

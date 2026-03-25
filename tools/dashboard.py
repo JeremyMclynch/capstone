@@ -232,7 +232,7 @@ class DeviceTracker:
         host_ips = self._get_host_ips()
         try:
             result = subprocess.run(
-                ["ping6", "-c", "3", "-I", self.iface, "ff03::1"],
+                ["ping", "-6", "-c", "3", "-I", self.iface, "ff03::1"],
                 capture_output=True, text=True, timeout=8,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):

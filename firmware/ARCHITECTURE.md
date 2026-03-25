@@ -858,7 +858,7 @@ sudo ip -6 maddr add ff03::1 dev wpan0
 
 ```bash
 docker exec otbr ot-ctl neighbor table   # list mesh neighbors
-ping6 -c3 -I wpan0 ff03::1              # multicast ping to find all devices
+ping -6 -c3 -I wpan0 ff03::1              # multicast ping to find all devices
 ```
 
 Devices receive mesh-local unicast addresses (e.g. `fdde:ad00:beef:0:a4b1:c2d3:e4f5:6789`). Use these for sending commands to specific devices.
@@ -1220,7 +1220,7 @@ UWB addresses are **automatically derived** from each device's hardware ID at bo
 ### Quick-Start Checklist
 
 1. Start OTBR Docker container: `bash tools/scripts/otbr_setup.sh`
-2. Verify connectivity: `ping6 -c3 -I wpan0 ff03::1`
+2. Verify connectivity: `ping -6 -c3 -I wpan0 ff03::1`
 3. Discover device IPv6 addresses: `docker exec otbr ot-ctl neighbor table`
 4. Start your CoAP server on `[::]:5683` with `/distance` and `/event` POST resources
 5. Verify data flows: devices auto-start ranging on boot and POST to `ff03::1:5683`

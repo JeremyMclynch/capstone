@@ -178,7 +178,7 @@ The firmware on both boards auto-starts ranging on boot — no manual action nee
 Verify they've joined by pinging the Thread multicast address:
 
 ```bash
-ping6 -c3 -I wpan0 ff03::1
+ping -6 -c3 -I wpan0 ff03::1
 ```
 
 You should see responses from 2 devices (anchor + tag). If no responses appear after 15 seconds, check that:
@@ -212,7 +212,7 @@ Use arrow keys to navigate commands, Enter to execute, and `q` to quit. Devices 
 
 ### 6. (Optional) Verify devices via UCI over CoAP
 
-Use the IPv6 addresses from the `ping6` output to query devices remotely:
+Use the IPv6 addresses from the `ping -6` output to query devices remotely:
 
 ```bash
 python3 tools/scripts/uwb_tool.py coap://[<device-ipv6>] info
