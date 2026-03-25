@@ -223,7 +223,7 @@ static void final_msg_get_ts(const uint8_t *ts_field, uint32_t *ts)
 }
 
 /* ── UWB thread ───────────────────────────────────────────────────── */
-#define UWB_STACK_SIZE 2048
+#define UWB_STACK_SIZE 4096
 #define UWB_PRIORITY   0
 
 K_THREAD_STACK_DEFINE(uwb_stack, UWB_STACK_SIZE);
@@ -322,7 +322,7 @@ static void responder_loop(void)
         dwt_setrxtimeout(0);
         dwt_rxenable(DWT_START_RX_IMMEDIATE);
 
-        uwb_event_t evt = wait_for_event(K_FOREVER);
+        uwb_event_t evt = wait_for_event(K_SECONDS(30));
         if (!atomic_get(&uwb_running)) continue;
 
         if (evt != EVT_RX_OK) {
