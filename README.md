@@ -68,6 +68,53 @@ pip install aiocoap pyserial
 
 This creates a [T2 west workspace](https://docs.zephyrproject.org/latest/develop/west/workspaces.html) where the SDK repos (`zephyr/`, `nrf/`, `bootloader/`, etc.) are siblings of `capstone/`. All SDK directories are gitignored.
 
+### Arch Linux Setup
+
+```bash
+# 1. Install system packages
+sudo pacman -Sy docker docker-compose python python-virtualenv go curl iproute2
+
+# 2. Enable and start Docker
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+newgrp docker   # or log out and back in
+
+# 3. Clone and initialize workspace
+mkdir uwb-workspace && cd uwb-workspace
+git clone <repo-url> capstone
+west init -l capstone
+west update
+cd capstone
+
+# 4. Install nRF toolchain
+nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2
+
+# 5. Pull OTBR Docker image and install mcumgr
+bash tools/setup_host_tools.sh
+
+# 6. Enable IP forwarding (persistent across reboots)
+echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/90-otbr.conf
+echo 'net.ipv6.conf.all.forwarding=1' | sudo tee -a /etc/sysctl.d/90-otbr.conf
+sudo sysctl --system
+
+# 7. Python dependencies (in a venv)
+python -m venv .venv
+source .venv/bin/activate
+pip install aiocoap pyserial
+
+# 8. Configure OTBR interface — edit tools/otbr/otbr-env.list
+#    Set OT_INFRA_IF to your network interface:
+ip route show default | awk '{print $5; exit}'   # find it
+#    Then edit: OT_INFRA_IF=<your-interface>
+```
+
+After setup, activate the venv before running Python tools:
+```bash
+source .venv/bin/activate
+bash tools/scripts/otbr_setup.sh
+python3 tools/monitor.py
+```
+
 ## Build & Flash
 
 ```bash
