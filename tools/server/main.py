@@ -20,6 +20,8 @@ import asyncio
 import logging
 import os
 import signal
+import socket
+import struct
 
 import aiocoap
 
@@ -45,6 +47,10 @@ async def run_server(host: str, port: int) -> None:
         bind=(host, port),
     )
 
+    # Join ff03::1 multicast on wpan0 so we receive CoAP POSTs from Thread devices.
+    # aiocoap doesn't join multicast groups by default.
+    _join_multicast("ff03::1", "wpan0")
+
     logger.info("CoAP server ready. Waiting for distance measurements...")
     logger.info("Database: %s", os.path.abspath(database.DB_PATH))
 
@@ -63,6 +69,19 @@ async def run_server(host: str, port: int) -> None:
 
     logger.info("Shutting down CoAP server...")
     await context.shutdown()
+
+
+def _join_multicast(group: str, interface: str) -> None:
+    """Join an IPv6 multicast group on a specific interface at the OS socket level."""
+    try:
+        idx = socket.if_nametoindex(interface)
+        sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        mreq = struct.pack("16sI", socket.inet_pton(socket.AF_INET6, group), idx)
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+        sock.close()
+        logger.info("Joined multicast %s on %s", group, interface)
+    except OSError as e:
+        logger.warning("Could not join multicast %s on %s: %s", group, interface, e)
 
 
 def main() -> None:
