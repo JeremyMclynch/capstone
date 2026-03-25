@@ -8,30 +8,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-OT_BUILD_DIR="${SCRIPT_DIR}/openthread"
 
 echo "=== Host Tool Setup ==="
 
-# ── 1. OpenThread POSIX (ot-daemon + ot-ctl) ──────────────────────────────────
+# ── 1. Docker + OTBR image (replaces ot-daemon/ot-ctl build) ──────────────────
 
 echo ""
-echo "--- OpenThread POSIX tools ---"
-if [[ -x "${OT_BUILD_DIR}/ot-daemon" && -x "${OT_BUILD_DIR}/ot-ctl" ]]; then
-    echo "Already built at ${OT_BUILD_DIR}/ — skipping."
-    echo "  Delete ${OT_BUILD_DIR}/ to force rebuild."
+echo "--- OTBR Docker image ---"
+if command -v docker >/dev/null 2>&1; then
+    echo "Docker found: $(docker --version)"
+    echo "Pulling OpenThread Border Router image..."
+    docker pull openthread/border-router:latest
+    echo ""
+    echo "Enable IP forwarding (run once, if not already done):"
+    echo "  curl -sSL https://raw.githubusercontent.com/openthread/ot-br-posix/refs/heads/main/etc/docker/border-router/setup-host | sh"
 else
-    echo "Cloning and building OpenThread (this may take a few minutes)..."
-    OT_SRC=$(mktemp -d)
-    git clone --depth 1 https://github.com/openthread/openthread.git "$OT_SRC"
-    cd "$OT_SRC"
-    ./script/bootstrap   # install system build deps (cmake, ninja, etc.)
-    ./script/cmake-build posix
-    mkdir -p "$OT_BUILD_DIR"
-    cp build/posix/src/posix/ot-daemon "$OT_BUILD_DIR/"
-    cp build/posix/src/posix/ot-ctl "$OT_BUILD_DIR/"
-    cd "$PROJECT_ROOT"
-    rm -rf "$OT_SRC"
-    echo "Built: ${OT_BUILD_DIR}/ot-daemon, ot-ctl"
+    echo "Docker not found. Install Docker Engine first:"
+    echo "  https://docs.docker.com/engine/install/"
 fi
 
 # ── 2. mcumgr CLI (for OTA firmware updates) ──────────────────────────────────

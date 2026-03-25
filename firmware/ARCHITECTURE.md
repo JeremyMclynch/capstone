@@ -846,9 +846,9 @@ The server host must be on the same Thread network as the devices. Required para
 | Network Name | `ot_zephyr` | |
 | Mesh-Local Prefix | `fdde:ad00:beef::/64` | Devices get addresses under this prefix |
 
-**Host setup**: Run `scripts/thread_dongle_setup.sh` on the Linux host with an nRF52840 USB dongle as Thread RCP. This starts `ot-daemon`, configures the dataset, brings up `wpan0`, and joins the multicast group.
+**Host setup**: Run `tools/scripts/otbr_setup.sh` on the Linux host with an nRF52840 USB dongle as Thread RCP. This starts the OpenThread Border Router Docker container (`openthread/border-router`), configures the Thread dataset, brings up `wpan0`, fixes deprecated IPv6 addresses, and joins the multicast group. The OTBR web UI is available at `http://localhost:8080`.
 
-**Multicast group**: Devices send data to `ff03::1` (Thread realm-local all-nodes). The server host must join this group:
+**Multicast group**: Devices send data to `ff03::1` (Thread realm-local all-nodes). The setup script joins this group automatically, but it can also be done manually:
 
 ```bash
 sudo ip -6 maddr add ff03::1 dev wpan0
@@ -857,8 +857,8 @@ sudo ip -6 maddr add ff03::1 dev wpan0
 **Discovering device addresses**:
 
 ```bash
-sudo ot-ctl neighbor table    # list mesh neighbors
-ping6 -c3 -I wpan0 ff03::1   # multicast ping to find all devices
+docker exec otbr ot-ctl neighbor table   # list mesh neighbors
+ping6 -c3 -I wpan0 ff03::1              # multicast ping to find all devices
 ```
 
 Devices receive mesh-local unicast addresses (e.g. `fdde:ad00:beef:0:a4b1:c2d3:e4f5:6789`). Use these for sending commands to specific devices.
@@ -1219,11 +1219,10 @@ UWB addresses are **automatically derived** from each device's hardware ID at bo
 
 ### Quick-Start Checklist
 
-1. Set up Thread border router on your host (`scripts/thread_dongle_setup.sh`)
+1. Start OTBR Docker container: `bash tools/scripts/otbr_setup.sh`
 2. Verify connectivity: `ping6 -c3 -I wpan0 ff03::1`
-3. Discover device IPv6 addresses: `sudo ot-ctl neighbor table`
+3. Discover device IPv6 addresses: `docker exec otbr ot-ctl neighbor table`
 4. Start your CoAP server on `[::]:5683` with `/distance` and `/event` POST resources
-5. Join multicast group: `sudo ip -6 maddr add ff03::1 dev wpan0`
-6. Verify data flows: devices auto-start ranging on boot and POST to `ff03::1:5683`
+5. Verify data flows: devices auto-start ranging on boot and POST to `ff03::1:5683`
 7. Send commands to a specific device: `POST coap://[device-ipv6]:5683/cmd`
 8. To redirect a device to your unicast address: send SET_SERVER + SAVE_CONFIG

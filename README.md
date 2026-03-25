@@ -8,13 +8,13 @@ Real-time indoor positioning using Ultra-Wideband (DS-TWR) ranging over a Thread
 │                                                                  │
 │  ┌───────────────┐    UWB ranging    ┌───────────────────────┐  │
 │  │  DWM3001CDK   │◄────────────────►│    nRF52840 DK        │  │
-│  │  (Tag 0x0100) │                   │ + DWM3000EVB Shield   │  │
-│  │  mobile node  │                   │  (Anchor 0x0001)      │  │
+│  │    (Tag)      │                   │ + DWM3000EVB Shield   │  │
+│  │  mobile node  │                   │    (Anchor)           │  │
 │  └───────────────┘                   └───────────────────────┘  │
 │                                                                  │
 │  ┌───────────────┐                                              │
 │  │   XIAO BLE    │    CoAP POST /distance + /event             │
-│  │  (Tag 0x0200) │    over Thread multicast ff03::1            │
+│  │   (Anchor)    │    over Thread multicast ff03::1            │
 │  └───────────────┘                                              │
 └──────────────────────────────────────────────────────────────────┘
                                │
@@ -24,7 +24,7 @@ Real-time indoor positioning using Ultra-Wideband (DS-TWR) ranging over a Thread
                                │
                    ┌───────────▼───────────┐
                    │     Linux Host        │
-                   │  ot-daemon (Leader)   │
+                   │  OTBR Docker (Leader) │
                    │  monitor.py / server  │
                    └───────────────────────┘
 ```
@@ -37,6 +37,7 @@ nRF boards perform UWB ranging; distance measurements are sent via CoAP over Thr
 |---|---|---|
 | [nrfutil](https://www.nordicsemi.com/Products/Development-tools/nRF-Util) | Toolchain + flash | `nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2` |
 | [west](https://docs.zephyrproject.org/latest/develop/west/) | Zephyr meta-tool | `pip install west` |
+| [Docker](https://docs.docker.com/engine/install/) | OTBR border router | `curl -sSL https://get.docker.com \| sh` |
 | Python 3.10+ | Host tools | System package manager |
 | Go 1.21+ | mcumgr CLI (OTA) | System package manager |
 
@@ -54,11 +55,14 @@ west update
 # 3. Install nRF toolchain (if not already installed, ~3 GB)
 nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2
 
-# 4. Build host tools (OpenThread ot-daemon/ot-ctl, mcumgr CLI)
+# 4. Install host tools (Docker OTBR image, mcumgr CLI)
 cd capstone
 bash tools/setup_host_tools.sh
 
-# 5. Python dependencies (for monitor and server)
+# 5. Enable IP forwarding for Thread border router (run once)
+curl -sSL https://raw.githubusercontent.com/openthread/ot-br-posix/refs/heads/main/etc/docker/border-router/setup-host | sh
+
+# 6. Python dependencies (for monitor and server)
 pip install aiocoap pyserial
 ```
 
@@ -86,7 +90,10 @@ west flash --build-dir firmware/build/nrf52840dk-nrf52840 --dev-id 1050222631   
 west flash --build-dir firmware/build/decawave_dwm3001cdk --dev-id 760206311    # tag
 ```
 
-XIAO BLE uses UF2 drag-and-drop: double-tap RST, drag `firmware/build/xiao_ble/zephyr/zephyr.uf2` to the USB drive.
+XIAO BLE flashing via J-Link Debug Out (DK serial 1050222631):
+```bash
+bash firmware/build.sh xiao_ble --flash   # uses JLinkExe internally
+```
 
 ## Running the System (After Reboot)
 
@@ -102,15 +109,20 @@ nrfutil device list
 
 You should see 3 devices: the nRF USB Dongle (OpenThread RCP), the nRF52840 DK (anchor), and the DWM3001CDK (tag). Note the serial port assignments — **they can change between reboots**. Check the `Ports` field for each device and compare with the table in the Hardware section below.
 
-### 2. Start the Thread network on the host
+### 2. Start the Thread border router on the host
 
 ```bash
-sudo bash tools/scripts/thread_dongle_setup.sh
+bash tools/scripts/otbr_setup.sh
 ```
 
-This starts `ot-daemon` on the USB dongle, configures the Thread dataset, and joins the mesh as Leader. The `ot-daemon` process does **not** persist across reboots — you must re-run this script each time.
+This starts the OpenThread Border Router Docker container on the USB dongle, configures the Thread dataset, and joins the mesh as Leader. The container is set to `restart: unless-stopped`, but the Thread dataset must be re-configured after a container restart — re-run the script if needed.
 
-The script will print the `wpan0` IPv6 addresses and Thread state when done.
+The script will print the `wpan0` IPv6 addresses, Thread state, and the OTBR web UI URL (`http://localhost:8080`).
+
+To stop the border router:
+```bash
+docker compose -f tools/otbr/docker-compose.yml down
+```
 
 ### 3. Wait for devices to join the mesh
 
@@ -124,7 +136,7 @@ ping6 -c3 -I wpan0 ff03::1
 
 You should see responses from 2 devices (anchor + tag). If no responses appear after 15 seconds, check that:
 - Both boards are powered (LEDs active)
-- The USB dongle port in `thread_dongle_setup.sh` matches `nrfutil device list` output
+- The USB dongle port in `tools/otbr/otbr-env.list` matches `nrfutil device list` output
 - Try resetting the boards: `nrfutil device reset --serial-number <S/N>`
 
 ### 4. Run the monitor
@@ -165,9 +177,9 @@ python3 tools/scripts/uwb_tool.py coap://[<device-ipv6>] status
 | Device | Role | J-Link S/N | UART |
 |---|---|---|---|
 | nRF USB Dongle | OpenThread RCP | — | /dev/ttyACM0 |
-| nRF52840 DK + DWM3000EVB | Anchor (0x0001) | 1050222631 | /dev/ttyACM1 |
-| DWM3001CDK | Tag (0x0100) | 760206311 | /dev/ttyACM3 |
-| XIAO BLE + DWM3000EVB | Tag (0x0200) | — | UF2 flash |
+| nRF52840 DK + DWM3000EVB | Anchor | 1050222631 | /dev/ttyACM1 |
+| DWM3001CDK | Tag | 760206311 | /dev/ttyACM3 |
+| XIAO BLE + DWM3000EVB | Anchor | — | J-Link via DK |
 
 Use `nrfutil device list` to identify serial port assignments (they can change between reboots).
 
@@ -181,7 +193,7 @@ All devices share these compiled-in credentials:
 | PAN ID | 0xABCD (43981) |
 | Network Key | `00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff` |
 | Extended PAN ID | `11:11:11:11:22:22:22:22` |
-| Network Name | UWBTracker |
+| Network Name | ot_zephyr |
 
 ## UCI Device Configuration
 
@@ -243,10 +255,14 @@ uwb-workspace/                  # West workspace root
 │   └── tools/
 │       ├── monitor.py          # Live CoAP distance/event monitor
 │       ├── dashboard.py        # Curses TUI (monitor + discovery + commands)
-│       ├── setup_host_tools.sh # Build OpenThread + install mcumgr
+│       ├── setup_host_tools.sh # Pull OTBR Docker image + install mcumgr
+│       ├── otbr/
+│       │   ├── docker-compose.yml   # OTBR container definition
+│       │   └── otbr-env.list        # RCP device + interface config
 │       ├── scripts/
 │       │   ├── uwb_tool.py         # UCI command-line tool
-│       │   ├── thread_dongle_setup.sh  # Thread network setup (run as root)
+│       │   ├── otbr_setup.sh       # OTBR Docker setup (replaces thread_dongle_setup.sh)
+│       │   ├── ot-ctl              # Wrapper for docker exec otbr ot-ctl
 │       │   └── ota_update.sh       # OTA firmware update helper
 │       └── server/
 │           ├── main.py         # CoAP server entry point
@@ -273,9 +289,11 @@ Tag ──UWB pulse──► Anchor
                     ▼ CoAP POST ff03::1:5683/distance
               [anchor_id: u16][tag_id: u16]
               [distance_mm: u32][uptime_s: u32]
-                    │  (12 bytes, little-endian)
+              [rssi_q8: i16][fp_power_q8: i16]
+              [fp_index: u16][peak_index: u16]
+                    │  (20 bytes, little-endian)
                     ▼ Thread mesh → RCP dongle → wpan0
-              Linux host (ot-daemon)
+              Linux host (OTBR Docker)
                     │
                     ▼
            monitor.py     (live console)

@@ -18,10 +18,13 @@ cd capstone
 # 2. Install nRF toolchain (if not already installed)
 nrfutil toolchain-manager install --toolchain-bundle-id v3.2.2
 
-# 3. Build host tools (OpenThread ot-daemon/ot-ctl, mcumgr CLI)
+# 3. Install Docker (for OTBR) + mcumgr CLI
 bash tools/setup_host_tools.sh
 
-# 4. Python dependencies (for monitor and server)
+# 4. Enable IP forwarding for Thread border router (run once)
+curl -sSL https://raw.githubusercontent.com/openthread/ot-br-posix/refs/heads/main/etc/docker/border-router/setup-host | sh
+
+# 5. Python dependencies (for monitor and server)
 pip install aiocoap pyserial
 ```
 
@@ -124,8 +127,16 @@ Frame format: `[0xAA][CMD][LEN][PAYLOAD][CRC8]` → `[0xBB][CMD][STATUS][LEN][PA
 ## Monitoring
 
 ```bash
-# Start Thread on Linux host (once, as root)
-sudo bash tools/scripts/thread_dongle_setup.sh
+# Start OTBR Docker container and join Thread network
+bash tools/scripts/otbr_setup.sh
+
+# OTBR web UI (topology, diagnostics)
+# http://localhost:8080
+
+# ot-ctl commands via Docker
+docker exec otbr ot-ctl state
+docker exec otbr ot-ctl neighbor table
+# Or use the wrapper: tools/scripts/ot-ctl state
 
 # Live CoAP monitor (distance + tag events)
 python3 tools/monitor.py
@@ -137,6 +148,12 @@ cd tools/server && python3 main.py
 python3 tools/dashboard.py
 python3 tools/dashboard.py --no-monitor       # if monitor.py already running separately
 python3 tools/dashboard.py --iface wpan0      # explicit Thread interface
+
+# OTBR container logs (debugging)
+docker logs otbr
+
+# Stop OTBR
+docker compose -f tools/otbr/docker-compose.yml down
 ```
 
 ## OTA Firmware Updates
@@ -206,7 +223,7 @@ Shared firmware source builds for all boards; board-specific config in `firmware
 
 ## Thread Network
 
-Channel 15, PAN ID 0xABCD (43981), network key `00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff`. All devices and `tools/scripts/thread_dongle_setup.sh` must match.
+Channel 15, PAN ID 0xABCD (43981), network key `00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff`. All devices, `tools/otbr/otbr-env.list`, and `tools/scripts/otbr_setup.sh` must match.
 
 ## Testing
 

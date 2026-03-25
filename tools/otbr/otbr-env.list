@@ -1,0 +1,6 @@
+OT_RCP_DEVICE=spinel+hdlc+uart:///dev/ttyACM0?uart-baudrate=460800
+# Infrastructure interface — must be a real interface for border routing to work
+# Available: wlp99s0 (WiFi), enx00051b8c5dfc (USB Ethernet)
+OT_INFRA_IF=wlp99s0
+OT_THREAD_IF=wpan0
+OT_LOG_LEVEL=7
