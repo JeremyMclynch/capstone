@@ -17,7 +17,7 @@ pacman-key --populate archlinux
 
 # ── 2. Install Docker + dependencies ────────────────────────────────────────
 echo "Installing Docker and dependencies..."
-pacman -Sy --noconfirm docker docker-compose curl iproute2
+pacman -Sy --noconfirm docker docker-compose curl iproute2 python python-pip
 
 # ── 3. Start Docker daemon ──────────────────────────────────────────────────
 # Configure Docker for nspawn environment:
@@ -157,6 +157,8 @@ echo "  Dataset committed."
 echo "Starting Thread..."
 ctl ifconfig up  >/dev/null
 ctl thread start >/dev/null
+# Speed up router promotion (default jitter can be up to 120s)
+ctl routerselectionjitter 1 >/dev/null 2>&1 || true
 
 # ── 12. Wait for Thread to attach ──────────────────────────────────────────
 STATE=""
@@ -184,6 +186,71 @@ done < <(ip -6 addr show dev wpan0 scope global 2>/dev/null | awk '/inet6 /{prin
 # ── 14. Join realm-local multicast ─────────────────────────────────────────
 echo "Joining ff03::1 multicast group on wpan0..."
 ip -6 maddr add ff03::1 dev wpan0 2>/dev/null || true
+
+# ── 15. Install Python dependencies and test monitor.py ─────────────────────
+echo "Setting up Python venv..."
+python -m venv /tmp/venv
+source /tmp/venv/bin/activate
+pip install --quiet aiocoap
+
+# Wait for OTBR to become leader/router (may need to take over from previous leader)
+echo -n "Waiting for Thread role promotion ."
+for i in $(seq 1 60); do
+    STATE=$(ctl state 2>/dev/null | head -1 | tr -d '[:space:]') || true
+    case "$STATE" in
+        leader|router) echo " OK ($STATE after ${i}s)"; break ;;
+    esac
+    echo -n "."
+    sleep 1
+    if [[ $i -eq 60 ]]; then
+        echo " still $STATE after 60s (continuing anyway)"
+    fi
+done
+
+# Re-fix deprecated addresses (OTBR adds new ones after role change)
+echo "Re-fixing preferred lifetime on wpan0 addresses..."
+while IFS= read -r addr_cidr; do
+    ip -6 addr change "$addr_cidr" dev wpan0 preferred_lft forever valid_lft forever 2>/dev/null || true
+done < <(ip -6 addr show dev wpan0 scope global 2>/dev/null | awk '/inet6 /{print $2}')
+
+# Test CoAP reception via raw UDP socket with multicast join on wpan0
+echo "Testing CoAP reception on port 5683 (10s)..."
+COAP_LOG=/tmp/coap_reception.log
+/tmp/venv/bin/python -u -c "
+import socket, struct, time
+sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(('::', 5683))
+# Join ff03::1 multicast on wpan0
+wpan_idx = socket.if_nametoindex('wpan0')
+mreq = struct.pack('16sI', socket.inet_pton(socket.AF_INET6, 'ff03::1'), wpan_idx)
+sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+sock.settimeout(1.0)
+dist_count = 0
+evt_count = 0
+total = 0
+end = time.time() + 10
+while time.time() < end:
+    try:
+        data, addr = sock.recvfrom(1024)
+        total += 1
+        # Find CoAP payload after 0xFF marker
+        marker = data.find(b'\xff')
+        if marker >= 0:
+            payload = data[marker+1:]
+            if len(payload) == 20 or len(payload) == 12:
+                dist_count += 1
+            elif len(payload) == 6:
+                evt_count += 1
+    except socket.timeout:
+        pass
+print(f'Total: {total} CoAP packets ({dist_count} distance, {evt_count} events) in 10s')
+sock.close()
+" > "$COAP_LOG" 2>&1
+echo "  Reception results:"
+cat "$COAP_LOG"
+COAP_TOTAL=$(grep -oP 'Total: \K\d+' "$COAP_LOG" 2>/dev/null || echo "0")
+COAP_DIST=$(grep -oP '\((\d+) distance' "$COAP_LOG" 2>/dev/null | grep -oP '\d+' || echo "0")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Verification
@@ -239,6 +306,15 @@ if curl -sf -o /dev/null http://localhost:8080; then
     PASS=$((PASS + 1))
 else
     echo "FAIL: OTBR web UI not responding"
+    FAIL=$((FAIL + 1))
+fi
+
+# Test 6: CoAP packets received from devices
+if [[ "$COAP_TOTAL" -gt 0 ]]; then
+    echo "PASS: received $COAP_TOTAL CoAP packets ($COAP_DIST distance) from mesh devices"
+    PASS=$((PASS + 1))
+else
+    echo "FAIL: no CoAP packets received from mesh devices in 10s"
     FAIL=$((FAIL + 1))
 fi
 

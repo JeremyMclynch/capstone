@@ -113,6 +113,8 @@ echo "  Rootfs prepared."
 echo "Enabling IP forwarding on host (shared with container)..."
 sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
+# Disable reverse path filtering (Thread source addresses fail rpfilter check)
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
 
 # ── Phase 2: Launch nspawn container ────────────────────────────────────────
 
