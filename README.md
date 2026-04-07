@@ -1,3 +1,5 @@
+# TODO: Need to add dest address for the RESP payload to fix race condition where 2 tags may send a request ranging from the same anchor within a 1ms window. Also need to add check for anchor to check dest address from FINAL message (Already in payload need to add check) since this also adds a 5ms race condition.
+
 # UWB Mesh Tracker
 
 Real-time indoor positioning using Ultra-Wideband (DS-TWR) ranging over a Thread mesh network.
